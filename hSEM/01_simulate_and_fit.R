@@ -1,5 +1,5 @@
 # ============================================================
-#  Predator-prey simulation — combined abundance + occupancy (v4)
+#  Predator-prey simulation — combined abundance + occupancy 
 #  (Skye Anderson, UQ PhD Ch3)
 #
 #  SAME SIMULATION DATASET applied to all 12 models.
@@ -11,49 +11,75 @@
 #    shared by Royle-Nichols and occupancy models.
 #    Count histories C_ij shared by N-mixture models.
 #    Landscape structure toggled via LANDSCAPE env var.
+#    Only running landscape = FALSE 
 #
-#  FITTED MODELS:
+#  FITTED MODELS: (eleven models reported in the paper)
 #
 #    Abundance — N-mixture (b_pred on log scale):
-#    Model 1: Max count + SEM (lmer)
-#    Model 2: Null N-mixture BLUPs + SEM (lmer)
-#    Model 3: Full N-mixture BLUPs + SEM (lmer)
-#    Model 4: Co-abundance N-mixture (NIMBLE)
-#    Model 5: Integrated N-mixture SEM (NIMBLE)
+#    Model 1: Naive count index SEM (lmer)
+#    Model 2: Two-step null N-mixtureSEM (lmer)
+#    Model 3: Two-step N-mixture with covariates SEM (lmer)
+#    Model 4: Abundance hSEM
 #
 #    Abundance — Royle-Nichols (b_pred on log scale):
-#    Model 6: Null Royle-Nichols BLUPs + SEM (lmer)
-#    Model 7: Full Royle-Nichols BLUPs + SEM (lmer)
-#    Model 8: Integrated Royle-Nichols SEM (NIMBLE)
+#    Model 5: Two-step null Royle-Nichols SEM (lmer)
+#    Model 6: Two-step Royle-Nichols with covariates SEM (lmer)
+#    Model 7: Royle-Nichols hSEM 
+#
 #
 #    Occupancy applied to binarised Y_ij from abundance DGP:
-#    Model 9:  Naïve detection rate + SEM (lmer, probability scale)
-#    Model 10: Null occupancy model BLUPs + SEM (lmer, probability scale)
-#    Model 11: Full occupancy model predicted psi + SEM (lmer, probability scale)
-#    Model 12: Integrated Bayesian occupancy SEM (NIMBLE, logit scale)
+#    Model 8:  Naive detection rate SEM (lmer, probability scale)
+#    Model 9: Two-step null occupancy SEM (lmer, probability scale)
+#    Model 10: Two-step occupancy with covariates SEM (lmer, probability scale)
+#    Model 11: Occupancy hSEM (NIMBLE, logit scale)
 #
-#  Note: b_pred in Models 1–8 is on the log scale, matching the DGP.
-#        Models 6–8 use binary Y_ij but maintain a Poisson abundance
-#        process, recovering the same estimand as Models 1–5.
-#        b_pred in Models 9–11 is on the probability scale (lmer Gaussian);
-#        b_pred in Model 12 is on the logit scale. Both differ from the
+#
+#    Also fit (not reported in the paper):
+#    Co-abundance N-mixture (NIMBLE) - exploratory, retained as 
+#    an additional comparison to the hSEM (Model 4)
+#
+#  Note: b_pred in Models 1–7 is on the log scale, matching the DGP.
+#        Models 5–7 use binary Y_ij but maintain a Poisson abundance
+#        process, recovering the same estimand as Models 1–4.
+#        b_pred in Models 8–10 is on the probability scale (lmer Gaussian);
+#        b_pred in Model 11 is on the logit scale. Both differ from the
 #        log-scale truth — this is expected and part of the comparison.
 # ============================================================
 
 rm(list = ls())
 
 # ── Settings ──────────────────────────────────────────────────────────────────
+# Read run configuration from environment variables so one script serves every
+# scenario. On the HPC, the SLURM generator sets these per job; run locally, the
+# fallback defaults after each `if` take over.
+#   SETTING   "HPC" or "LOCAL" — switches library paths and temp-dir handling
+#   SCENARIO  which entry of scenario_params to run (e.g. "rare_50_meso")
+#   LANDSCAPE "TRUE"/"FALSE" — whether to add landscape structure
 setting       <- Sys.getenv("SETTING");  if (setting == "")    setting  <- "LOCAL"
 scenario      <- Sys.getenv("SCENARIO"); if (scenario == "")   scenario <- "rare_50_meso"
 landscape_str <- Sys.getenv("LANDSCAPE"); if (landscape_str == "") landscape_str <- "FALSE"
+
+# Treat anything other than false/0/no as landscape = TRUE 
 use_landscape <- !tolower(landscape_str) %in% c("false", "0", "no")
+
+# One replicate per SLURM array task; the task ID doubles as the RNG seed so
+# each replicate is reproducible and distinct. Runs default to replicate/seed 1
+# when SLURM_ARRAY_TASK_ID is absent (i.e. run locally, not under SLURM).
 rep_id <- as.integer(Sys.getenv("SLURM_ARRAY_TASK_ID")); if (is.na(rep_id)) rep_id <- 1
-seed          <- rep_id
+seed   <- rep_id
+
+# On the HPC, a missing task ID means a misconfigured array job — fail loudly
+# rather than silently running every task as replicate 1.
+if (setting == "HPC" && is.na(as.integer(Sys.getenv("SLURM_ARRAY_TASK_ID"))))
+  stop("SLURM_ARRAY_TASK_ID not found in HPC run")
 
 cat(sprintf("Setting: %s | Scenario: %s | Landscape: %s\n",
             setting, scenario, use_landscape))
 
 # ── Unique temp dir for NIMBLE compilation (HPC only) ────────────────────────
+# NIMBLE writes C++ files during model compilation. On a shared cluster, many
+# array tasks comile at once, so give each its own working directroy to avoid
+# collisions between concurrent jobs writing the same filenames.
 if (setting == "HPC") {
   task_dir <- file.path(tempdir(),
                         paste0("task_", Sys.getenv("SLURM_ARRAY_JOB_ID"),
@@ -63,9 +89,18 @@ if (setting == "HPC") {
 }
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+# Null-coalescing operator: return x unless it is NULL, in which case reutrn y:
 `%||%` <- function(x, y) if (!is.null(x)) x else y
 
 # ── Scenario parameters ───────────────────────────────────────────────────────
+# Each scenario fixes the simulation design: number of sites and visits, the
+# mean abundances (lambda) of predator, prey, and mesopredator, and whether the
+# mesopredator pathway is active. meso_cpred and meso_bmeso are the mesopredator
+# interaction strengths (predator->meso and meso->prey) used when run_meso=TRUE.
+#
+# NOTE: the six non-meso scenarios below are commented out, so this script as
+# written runs only the *_meso scenarios. Re-enable the block above the meso
+# scenarios to run the non-meso designs.
 scenario_params <- list(
   
   # # ── Abundant (prey=10, meso=4, pred=2) ──────────────────────────────────
@@ -97,6 +132,7 @@ scenario_params <- list(
   #   run_meso=FALSE, meso_cpred=-0.2, meso_bmeso=-0.15),
   
   # ── Abundant + meso ──────────────────────────────────────────────────────
+  # High-abundance system with the mesopredatory pathway active. 
   abundant_1000_meso = list(
     nSites=1000, nVisits=10,
     meanLambda_pred=2.0, meanLambda_prey=10.0, meanLambda_meso=4.0,
@@ -111,6 +147,7 @@ scenario_params <- list(
     run_meso=TRUE, meso_cpred=-0.2, meso_bmeso=-0.15),
   
   # ── Rare + meso ──────────────────────────────────────────────────────────
+  # Low abundance system with the mesopredator pathway active 
   rare_1000_meso = list(
     nSites=1000, nVisits=10,
     meanLambda_pred=0.5, meanLambda_prey=2, meanLambda_meso=1.5,
@@ -125,9 +162,11 @@ scenario_params <- list(
     run_meso=TRUE, meso_cpred=-0.2, meso_bmeso=-0.15)
 )
 
+# Fail fast if an unrecognised scenario name comes in from the environment 
 if (!scenario %in% names(scenario_params))
   stop(sprintf("Unknown scenario: '%s'", scenario))
 
+# Unpack the chosen scenario into named variables for use below 
 sc               <- scenario_params[[scenario]]
 nSites           <- sc$nSites
 nVisits          <- sc$nVisits
@@ -138,9 +177,13 @@ run_meso         <- sc$run_meso
 meso_cpred       <- sc$meso_cpred
 meso_bmeso       <- sc$meso_bmeso
 
+# Number of independent landscape draws (used when use_landscape = TRUE)
 n_landscapes <- 10
 
 # ── Libraries ─────────────────────────────────────────────────────────────────
+# Local runs use the default library; HPC runs point explicitly at the user
+# library built against the cluster's R 4.4 module, since the default path may
+# not be on the search path inside a batch job.
 if (setting == "LOCAL") {
   library(lme4); library(unmarked); library(nimble); library(coda)
 } else {
@@ -150,30 +193,42 @@ if (setting == "LOCAL") {
 }
 
 # ── MCMC settings ─────────────────────────────────────────────────────────────
+# short chains for local testing: long chaings on the HPC for production
+# Both use 3 chains so convergence can be assessed via R-hat downstream 
 if (setting == "LOCAL") {
   nimble_iter=5000; nimble_burnin=1000; nimble_chains=3; nimble_thin=2
 } else {
   nimble_iter=30000; nimble_burnin=10000; nimble_chains=3; nimble_thin=5
 }
 
-# ── Seed and replicate ────────────────────────────────────────────────────────
-if (setting == "LOCAL") { slurm <- 1; seed <- 42 } else {
-  slurm <- as.integer(Sys.getenv("SLURM_ARRAY_TASK_ID"))
-  if (is.na(slurm))
-    stop("SLURM_ARRAY_TASK_ID not found")
-  seed  <- slurm
-}
-
 # ── Save paths ────────────────────────────────────────────────────────────────
+# Landscape tag used in output filenames: LT = landscape on, LF = landscape off.
 land_tag <- ifelse(use_landscape, "LT", "LF")
 
 # ============================================================
 #  SIMULATE DATA — ABUNDANCE DGP
-#  Same as v3. Generates count data (C) and binarised
-#  detection histories (Y) for both model families.
+#  Generates count data (C) and binarised detection histories
+#  (Y) for both model families from a single abundance process.
 #  Landscape structure toggled by use_landscape.
 # ============================================================
 
+# simulate_predprey() : builds one replicate of the 3 species system.
+#
+# Structure of the data-generating process (all on the log/abundance scale):
+#   Predator abundance   depends on Env1
+#   Mesopredator (opt.)  depends on predator abundance
+#   Prey abundance       depends on Env2, predator abundance, and (if meso) meso
+#
+# For each species: true abundance N ~ Poisson(lambda); counts C are binomial
+# thinning of N by detection probability p across visits; Y is C binarised to
+# presence/absence. So counts and detection histories share one true abundance,
+# which is what lets N-mixture, Royle-Nichols, and occupancy models all be
+# fitted to the same simulated reality.
+#
+# Key interaction parameters (the estimands the paper compares recovery of):
+#   b_pred  effect of predator abundance on prey (log scale) — the main SIV
+#   c_pred  effect of predator abundance on mesopredator (meso runs)
+#   b_meso  effect of mesopredator abundance on prey (meso runs)
 simulate_predprey <- function(
     nSites, nVisits=10, seed=NULL,
     n_landscapes=10, n_both_landscapes=4,
@@ -186,11 +241,20 @@ simulate_predprey <- function(
     meanLambda_pred=NULL, meanLambda_prey=NULL, meanLambda_meso=NULL,
     use_landscape
 ) {
+  
+  # Scenario mean abundance override the default intercepts when supplied
+  # converting each mean lambda to its log-scale intercept 
   if (!is.null(meanLambda_pred)) a_int <- log(meanLambda_pred)
   if (!is.null(meanLambda_prey)) b_int <- log(meanLambda_prey)
   if (!is.null(meanLambda_meso)) c_int <- log(meanLambda_meso)
   if (!is.null(seed)) set.seed(seed)
   
+  # ── Landscape structure ─────────────────────────────────────────────────────
+  # When on, sites are grouped into n_landscapes blocks, each block is one of
+  # three types (both species can occur / predator-only / prey-only), and each
+  # block gets a random abundance offset. The type sets structural zeros:
+  # z_land_* = 0 forces that species absent in blocks where it cannot occur.
+  # The component counts must sum to n_landscapes (enforced below).
   if (use_landscape) {
     stopifnot(nSites %% n_landscapes == 0)
     stopifnot(n_both_landscapes + n_pred_only + n_prey_only == n_landscapes)
@@ -205,6 +269,7 @@ simulate_predprey <- function(
     z_land_pred <- ifelse(land_type[landscape] %in% c("both","pred_only"), 1L, 0L)
     z_land_prey <- ifelse(land_type[landscape] %in% c("both","prey_only"), 1L, 0L)
   } else {
+    # Landscape off: one pesudo-block, no random offsets, no structural zeros
     landscape   <- rep(1L, nSites)  # single pseudo-landscape
     land_type   <- "both"
     b_land_pred <- 0
@@ -215,9 +280,13 @@ simulate_predprey <- function(
     n_landscapes <- 1L
   }
   
+  # Two independent environmental covariates: Env1 drives the predator, Env2
+  # drives the prey. Env1's effect on prey is therefore purely indirect
   Env1 <- rnorm(nSites); Env2 <- rnorm(nSites)
   
   # ── Predator ────────────────────────────────────────────────────────────────
+  # Abundance depends on Env1 and the landscape offset. Counts are binomial
+  # detections of the true abundance; Y is the binarised detection history.
   lambda_pred <- exp(a_int + a_env*Env1 + b_land_pred[landscape])
   N_pred      <- ifelse(z_land_pred==1L, rpois(nSites, lambda_pred), 0L)
   C_pred      <- matrix(rbinom(nSites*nVisits, rep(N_pred,nVisits), p_pred),
@@ -225,6 +294,8 @@ simulate_predprey <- function(
   Y_pred      <- ifelse(C_pred > 0L, 1L, 0L)
   
   # ── Mesopredator ─────────────────────────────────────────────────────────────
+  # Only generated in meso scenarios. Its abundance depends on predator
+  # abundance (c_pred), creating the predator -> meso pathway.
   if (meso) {
     lambda_meso <- exp(c_int + c_pred*N_pred + b_land_meso[landscape])
     N_meso      <- rpois(nSites, lambda_meso)
@@ -234,6 +305,9 @@ simulate_predprey <- function(
   }
   
   # ── Prey ────────────────────────────────────────────────────────────────────
+  # Prey abundance depends on Env2 and predator abundance, plus mesopredator
+  # abundance in meso scenarios. b_pred and b_meso are the interaction strengths
+  # the models are trying to recover.
   if (meso) {
     lambda_prey <- exp(b_int + b_env*Env2 +
                          b_pred*N_pred + b_meso*N_meso +
@@ -249,6 +323,11 @@ simulate_predprey <- function(
   Y_prey <- ifelse(C_prey > 0L, 1L, 0L)
   
   # ── Effect decomposition (log-scale path products) ───────────────────────────
+  # The true indirect and total effects, computed as products of path
+  # coefficients. These are the ground-truth values that derived-quantity
+  # estimands (e.g. total predator effect on prey) are compared against.
+  # Non-meso: Env1 reaches prey only through the predator.
+  # Meso: Env1 and the predator also reach prey through the mesopredator.
   indirect_Env1_via_pred <- a_env * b_pred
   total_Env1_on_prey     <- indirect_Env1_via_pred
   if (meso) {
@@ -258,6 +337,9 @@ simulate_predprey <- function(
     total_Env1_on_prey     <- indirect_Env1_via_pred + indirect_Env1_via_meso
   }
   
+  # ── Assemble outputs ─────────────────────────────────────────────────────────
+  # sim_data: everything a fitting model needs (counts, detection histories,
+  # covariates, landscape structure).
   sim_data <- list(
     nSites=nSites, nVisits=nVisits,
     n_landscapes=n_landscapes, landscape=landscape,
@@ -270,6 +352,8 @@ simulate_predprey <- function(
   if (meso) {
     sim_data$N_meso=N_meso; sim_data$C_meso=C_meso; sim_data$Y_meso=Y_meso }
   
+  # truth: the true parameter values and derived quantities, used downstream to
+  # compute bias for each fitted model.
   truth <- list(
     a_int=a_int, a_env=a_env, b_int=b_int, b_env=b_env, b_pred=b_pred,
     p_pred=p_pred, p_prey=p_prey,
@@ -293,28 +377,36 @@ simulate_predprey <- function(
 #  FIT ALL MODELS
 # ============================================================
 
+# fit_all_models(): takes one simulated replicate and fits every model in the
+# comparison to it, returning each model's estimated parameters for later
+# comparison against truth. 
 fit_all_models <- function(sim_out,
                            nimble_iter=30000, nimble_burnin=10000,
                            nimble_chains=3, nimble_thin=5,
                            meso, use_landscape) {
   
+  # ── Unpack the simulated data and truth ──────────────────────────────────────  
   dat          <- sim_out$sim_data
   truth        <- sim_out$truth
   nSites       <- dat$nSites; nVisits <- dat$nVisits
   n_landscapes <- dat$n_landscapes
   landscape    <- dat$landscape; land_f <- factor(landscape)
   Env1         <- dat$Env1; Env2 <- dat$Env2
-  C_pred       <- dat$C_pred; C_prey <- dat$C_prey
-  Y_pred       <- dat$Y_pred; Y_prey <- dat$Y_prey
+  C_pred       <- dat$C_pred; C_prey <- dat$C_prey # count histories (N-mixture)
+  Y_pred       <- dat$Y_pred; Y_prey <- dat$Y_prey # detection histories (RN/occ)
   z_land_pred  <- dat$z_land_pred; z_land_prey <- dat$z_land_prey
   if (meso) { C_meso <- dat$C_meso; Y_meso <- dat$Y_meso }
   
-  # Landscape-type presence indices (used for subsetting)
+  # Sites where each species can occur. Under landscape structure some blocks
+  # exclude a species (structural zeros), so models are fit only to the sites
+  # where that species is possible. Without landscape, these are all sites.
   idx_pred <- which(z_land_pred==1); idx_prey <- which(z_land_prey==1)
   
   results <- list()
   
   # ── Shared helpers ───────────────────────────────────────────────────────────
+  # Summarise posterior draws for a set of parameters: mean, sd, 95% CI, and
+  # the Gelman-Rubin R-hat convergence diagnostic (NA if it cannot be computed)
   post_summary <- function(samples, params) {
     do.call(rbind, lapply(params, function(p) {
       draws <- as.vector(as.matrix(samples[,p]))
@@ -324,13 +416,17 @@ fit_all_models <- function(sim_out,
                                error=function(e) NA))
     }))
   }
+  # "get posterior mean": mean of a single monitored parameter, NA on failure.
   gpm <- function(samps,p) tryCatch(mean(as.vector(as.matrix(samps[,p]))),
                                     error=function(e) NA_real_)
+  # Safely pull a named element from a list, returning a default if missing. 
   safe_get <- function(lst,nm,def=NA_real_) {
     v <- tryCatch(lst[[nm]], error=function(e) def)
     if (is.null(v)||length(v)==0) def else as.numeric(v) }
   
   # ── NIMBLE helper: compile and run ───────────────────────────────────────────
+  # Build, compile and run an MCMC for a NIMBLE model, returning coda samples.
+  # USed by the hSEM models
   run_nimble <- function(code, constants, data, inits, monitors,
                          iter, burnin, chains, thin) {
     m    <- suppressWarnings(nimbleModel(code, constants, data, inits))
@@ -342,17 +438,25 @@ fit_all_models <- function(sim_out,
             samplesAsCodaMCMC=TRUE)
   }
   
-  # ── Abundance lmer SEM helper ─────────────────────────────────────────────
-  # Models 1–3: regresses count-scale N_hat on N_hat.
-  # use_landscape controls (1|landscape) inclusion.
-  # TO:
+  # ── Abundance lmer/glm SEM helper ─────────────────────────────────────────────
+  # Two-step abundance SEMs (Models 2 and 3, and the naive Model 1): take
+  # per-site abundance estimates and regress them piece by piece through the
+  # path structure (predator ~ Env1, prey ~ Env2 + predator [+ meso]) using
+  # Poisson GLMs. use_landscape toggles the (1|landscape) random intercept;
+  # when off, the term is stripped and a plain glm() is used.
+  #
+  # NOTE: abundance estimates are rounded to integers and floored at 1 before
+  # the Poisson GLM.
   fit_abund_sem <- function(N_hat_pred, N_hat_prey, label,
                             N_hat_meso=NULL) {
-    # Round to integers, floor at 1 (required for Poisson GLM)
+    # Round to integers, floor at 1 (Poisson GLM response must be a count >= 0;
+    # flooring at 1 avoids zeros that would otherwise arise from rounding down)
     N_hat_pred <- pmax(round(N_hat_pred), 1L)
     N_hat_prey <- pmax(round(N_hat_prey), 1L)
     if (!is.null(N_hat_meso)) N_hat_meso <- pmax(round(N_hat_meso), 1L)
     
+    # Fit one path regression; drop the landscape random effect when off.
+    # Returns NULL on failure
     fit_glm <- function(formula_str, data) {
       if (use_landscape)
         tryCatch(lme4::glmer(as.formula(formula_str), data=data, family=poisson),
@@ -362,6 +466,7 @@ fit_all_models <- function(sim_out,
                      data=data, family=poisson), error=function(e) NULL)
     }
     if (!is.null(N_hat_meso)) {
+      # Meso versions: three path regressions (predator, meso, prey)
       df_pred <- data.frame(Npred=N_hat_pred[idx_pred], Env1=Env1[idx_pred],
                             landscape=land_f[idx_pred])
       df_meso <- data.frame(Nmeso=N_hat_meso, Npred=N_hat_pred,
@@ -372,15 +477,20 @@ fit_all_models <- function(sim_out,
       m1 <- fit_glm("Npred ~ Env1 + (1|landscape)", df_pred)
       m2 <- fit_glm("Nmeso ~ Env1 + Npred + (1|landscape)", df_meso)
       m3 <- fit_glm("Nprey ~ Env2 + Npred + Nmeso + (1|landscape)", df_prey)
+      # If any path failed to fig, return all -NA so this replicate is flagged 
       if (is.null(m1)||is.null(m2)||is.null(m3))
         return(list(label=label, a_int=NA,c_int=NA,b_int=NA,a_env=NA,b_env=NA,
                     b_pred=NA,c_pred=NA,b_meso=NA,indirect_Env1=NA,
                     indirect_pred_via_meso=NA,total_pred_on_prey=NA,
                     indirect_Env1_via_meso=NA,total_Env1_on_prey=NA))
+      
+      # Extract fixed effects (fixef under lmer, coef under plain glm)
       cf1 <- coef(m1); cf2 <- coef(m2); cf3 <- coef(m3)
       if (use_landscape) { cf1 <- lme4::fixef(m1); cf2 <- lme4::fixef(m2)
       cf3 <- lme4::fixef(m3) }
       bE <- cf1["Env1"]; bpp <- cf3["Npred"]; cpm <- cf2["Npred"]; bmp <- cf3["Nmeso"]
+      
+      # Reconstruct direct, indirect, and total effects from the path products 
       return(list(label=label, a_int=cf1["(Intercept)"], c_int=cf2["(Intercept)"],
                   b_int=cf3["(Intercept)"], a_env=bE, b_env=cf3["Env2"],
                   b_pred=bpp, c_pred=cpm, b_meso=bmp,
@@ -389,6 +499,7 @@ fit_all_models <- function(sim_out,
                   indirect_Env1_via_meso=bE*cpm*bmp,
                   total_Env1_on_prey=bE*bpp+bE*cpm*bmp))
     } else {
+      # Non-meso version: two path regressions (predator, prey)
       df_pred <- data.frame(Npred=N_hat_pred[idx_pred], Env1=Env1[idx_pred],
                             landscape=land_f[idx_pred])
       df_prey <- data.frame(Nprey=N_hat_prey[idx_prey], Npred=N_hat_pred[idx_prey],
@@ -408,8 +519,14 @@ fit_all_models <- function(sim_out,
   }
   
   # ── Occupancy lmer SEM helper ─────────────────────────────────────────────
-  # Models 6–8: regresses psi estimates (probability scale).
+  # Two-step occupancy SEMs: same path structure as the abundance helper, but
+  # regresses occupancy probabilities (psi, probability scale) instead of
+  # abundances. This estimates a DIFFERENT quantity from the abundance models
+  # (effect of predator *presence* on prey, not predator *abundance*), which is
+  # a central point of the comparison rather than a modelling error.
+  # No rounding here because psi is continuous on [0,1].
   fit_occ_sem <- function(psi_pred, psi_prey, label, psi_meso=NULL) {
+    # Gaussian regressions (lmer with landscape, plain lm without)
     fit_lm <- function(formula_str, data) {
       if (use_landscape)
         tryCatch(lme4::lmer(as.formula(formula_str), data=data),
@@ -418,6 +535,8 @@ fit_all_models <- function(sim_out,
         tryCatch(lm(as.formula(sub("\\+ \\(1\\|landscape\\)","",formula_str)),
                     data=data), error=function(e) NULL)
     }
+    # If predator occupancy barely varies across sites, there is no signal to 
+    # regress on, so bail out with NAs rather than fit deenerate model 
     if (sd(psi_pred, na.rm=TRUE) < 0.01) {
       if (!is.null(psi_meso))
         return(list(label=label, a_int=NA, c_int=NA, b_int=NA, a_env=NA, b_env=NA,
@@ -429,6 +548,7 @@ fit_all_models <- function(sim_out,
                     b_env=NA, b_pred=NA, indirect_Env1=NA))
     }
     if (!is.null(psi_meso)) {
+      # Meso version: three path regressions on psi. 
       df_pred <- data.frame(psi_pred=psi_pred[idx_pred], Env1=Env1[idx_pred],
                             landscape=land_f[idx_pred])
       df_meso <- data.frame(psi_meso=psi_meso, psi_pred=psi_pred,
@@ -457,16 +577,13 @@ fit_all_models <- function(sim_out,
                   indirect_Env1_via_meso=bE*cpm*bmp,
                   total_Env1_on_prey=bE*bpp+bE*cpm*bmp))
     } else {
+      # Non-meso version: two path regressions on psi. 
       df_pred <- data.frame(psi_pred=psi_pred[idx_pred], Env1=Env1[idx_pred],
                             landscape=land_f[idx_pred])
       df_prey <- data.frame(psi_prey=psi_prey[idx_prey], psi_pred=psi_pred[idx_prey],
                             Env2=Env2[idx_prey], landscape=land_f[idx_prey])
       m1 <- fit_lm("psi_pred ~ Env1 + (1|landscape)", df_pred)
       m2 <- fit_lm("psi_prey ~ Env2 + psi_pred + (1|landscape)", df_prey)
-      cat("sd(psi_prey):", sd(df_prey$psi_prey, na.rm=TRUE), "\n")
-      cat("sd(psi_pred in prey df):", sd(df_prey$psi_pred, na.rm=TRUE), "\n")
-      cat("sd(psi_meso in prey df):", sd(df_prey$psi_meso, na.rm=TRUE), "\n")
-      cat("any NA in df_prey:", anyNA(df_prey), "\n")
       if (is.null(m1)||is.null(m2))
         return(list(label=label,a_int=NA,b_int=NA,a_env=NA,
                     b_env=NA,b_pred=NA,indirect_Env1=NA))
@@ -480,6 +597,9 @@ fit_all_models <- function(sim_out,
   }
   
   # ── unmarked siteCovs ────────────────────────────────────────────────────────
+  # Site-level covariate frames passed to unmarked models. Include the landscape
+  # factor only when landscape structure is on; droplevels() removes empty
+  # factor levels left by subsetting to occupiable sites.
   if (use_landscape) {
     sc_pred <- data.frame(Env1=Env1[idx_pred], landscape=droplevels(land_f[idx_pred]))
     sc_prey <- data.frame(Env2=Env2[idx_prey], landscape=droplevels(land_f[idx_prey]))
@@ -493,6 +613,8 @@ fit_all_models <- function(sim_out,
   # ============================================================
   
   # ── Model 1: Max count SEM ────────────────────────────────────────────────
+  # Naive index: use each site's maximum observed count as a stand-in for
+  # abundance, with no detection correction, then run the abundance SEM on it.
   message("\n--- Model 1: Max count SEM ---")
   maxC_pred <- numeric(nSites); maxC_pred[idx_pred] <- apply(C_pred[idx_pred,,drop=F],1,max)
   maxC_prey <- numeric(nSites); maxC_prey[idx_prey] <- apply(C_prey[idx_prey,,drop=F],1,max)
@@ -505,14 +627,17 @@ fit_all_models <- function(sim_out,
   }
   
   # ── Models 2–3: N-mixture BLUPs / predicted SEM ───────────────────────────
+  # Two-step N-mixture: fit per-species N-mixture models (pcount), extract the
+  # per-site posterior-mean abundance (the BUP from ranef), then run the
+  # abundance SEM on those estimates. "null" uses intercept-only detection/
+  # abundance; "full" adds environmental (and landscape) covariates to the
+  # abundance stage. K is the upper bound on latent abundance for the integration.
   message("\n--- Models 2–3: N-mixture BLUPs + SEM ---")
   K_pred <- max(C_pred) * 2 + 10
   K_prey <- max(C_prey) * 2 + 10
   
   # Null N-mixture
-  umf_pred_null <- if (use_landscape)
-    unmarkedFramePCount(y=C_pred[idx_pred,], siteCovs=sc_pred) else
-      unmarkedFramePCount(y=C_pred[idx_pred,], siteCovs=sc_pred)
+  umf_pred_null <- unmarkedFramePCount(y=C_pred[idx_pred,], siteCovs=sc_pred)
   umf_prey_null <- unmarkedFramePCount(y=C_prey[idx_prey,], siteCovs=sc_prey)
   
   nm_pred_null <- suppressWarnings(tryCatch(
@@ -520,6 +645,7 @@ fit_all_models <- function(sim_out,
   nm_prey_null <- suppressWarnings(tryCatch(
     pcount(~1~1, data=umf_prey_null, K=K_prey), error=function(e) NULL))
   
+  # Per-site abundance estimates (BUPs); NA if the model failed to fit.
   Nhat_pred_null <- numeric(nSites)
   Nhat_prey_null <- numeric(nSites)
   Nhat_pred_null[idx_pred] <- if (!is.null(nm_pred_null))
@@ -527,7 +653,7 @@ fit_all_models <- function(sim_out,
   Nhat_prey_null[idx_prey] <- if (!is.null(nm_prey_null))
     bup(ranef(nm_prey_null), stat="mean") else rep(NA, length(idx_prey))
   
-  # Full N-mixture
+  # Full N-mixture (abundance depends on Env; landscape added when on)
   full_formula_pred <- if (use_landscape) ~1~Env1+landscape else ~1~Env1
   full_formula_prey <- if (use_landscape) ~1~Env2+landscape else ~1~Env2
   
@@ -549,6 +675,7 @@ fit_all_models <- function(sim_out,
     bup(ranef(nm_prey_full), stat="mean") else rep(NA, length(idx_prey))
   
   if (meso) {
+    # Mesopredator abundance estimated the same way when the meso pathway is on.
     K_meso <- max(C_meso) * 2 + 10
     sc_meso <- if (use_landscape) data.frame(Env1=Env1, landscape=land_f) else
       data.frame(Env1=Env1)
@@ -576,11 +703,16 @@ fit_all_models <- function(sim_out,
   
   # ============================================================
   #
-  # MODELS 6–7: ROYLE-NICHOLS TWO-STAGE (BUPs → lmer SEM)
+  # MODELS 5–6: ROYLE-NICHOLS TWO-STAGE (BUPs → lmer SEM)
   #
   # ============================================================
+  # Same two-step structure as the N-mixture models above, but abundance is
+  # estimated with Royle-Nichols models (occuRN) fit to binary detection
+  # histories Y instead of counts C. The per-site abundance BUPs are then fed
+  # into the SAME fit_abund_sem helper, so RN estimates are rounded and run
+  # through the Poisson-GLM SEM exactly as the N-mixture estimates are.
   
-  message("\n--- Models 6–7: Royle-Nichols BLUPs + SEM ---")
+  message("\n--- Royle-Nichols BLUPs + SEM ---")
   
   umf_pred_rn_null <- unmarkedFrameOccu(y=Y_pred[idx_pred,,drop=F], siteCovs=sc_pred)
   umf_prey_rn_null <- unmarkedFrameOccu(y=Y_prey[idx_prey,,drop=F], siteCovs=sc_prey)
@@ -638,18 +770,23 @@ fit_all_models <- function(sim_out,
   }
   
   # ============================================================
-  #  MODELS 4–5: ABUNDANCE NIMBLE
-  #  Landscape toggle: with_land uses b_land/sigma_land;
-  #  without uses no landscape terms.
+  #  MODELS 4: ABUNDANCE hSEM (NIMBLE)
+  # Plus co-abundance (exploratory, not reported in the paper)
+  #  Landscape toggle: with_land uses b_land/sigma_land random;
+  #  effects; without uses no landscape terms.
   # ============================================================
-  message("\n--- Models 4–5: Abundance NIMBLE ---")
+  message("\n--- Abundance NIMBLE (co-abundance + abundance hSEM) ---")
   
+  # Shared NIMBLE constants for both the co-abundance and hSEM fits
   nim_const_abund <- if (use_landscape)
     list(nSites=nSites, nVisits=nVisits, n_landscapes=n_landscapes,
          landscape=landscape, Env1=Env1, Env2=Env2) else
            list(nSites=nSites, nVisits=nVisits, Env1=Env1, Env2=Env2)
   
-  # ── Model 4: Co-abundance N-mixture ───────────────────────────────────────
+  # ── Co-abundance N-mixture (exploratory, not one of the eleven models) ─────
+  # Retained as an additional comparison to the abundance hSEM below. Not
+  # numbered or reported in the paper. Runs a full NIMBLE MCMC, so it adds
+  # compute time; it could be disabled if only the reported models are needed.
   if (meso) {
     if (use_landscape) {
       coabund_code_meso <- nimbleCode({
@@ -663,6 +800,8 @@ fit_all_models <- function(sim_out,
           b_land_meso[l] ~ dnorm(0, sd=sigma_land_meso)
           b_land_prey[l] ~ dnorm(0, sd=sigma_land_prey)
         }
+        # Predator abundance -> meso abundance -> prey abundance, all Poisson
+        # with binomial detection. b_pred/b_meso are the log-scale interactions.
         for (i in 1:nSites) {
           log(lambda_pred[i]) <- a_int + a_env*Env1[i] + b_land_pred[landscape[i]]
           N_pred[i] ~ dpois(lambda_pred[i] * z_land_pred[i])
@@ -675,6 +814,7 @@ fit_all_models <- function(sim_out,
           N_prey[i] ~ dpois(lambda_prey[i] * z_land_prey[i])
           for (j in 1:nVisits) { C_prey[i,j] ~ dbin(p_prey, N_prey[i]) }
         }
+        # Derived path quantities (log-scale products), computed within the model
         indirect_Env1_via_pred <- a_env * b_pred
         indirect_Env1_via_meso <- a_env * c_pred * b_meso
         indirect_pred_via_meso <- c_pred * b_meso
@@ -683,6 +823,7 @@ fit_all_models <- function(sim_out,
       })
       nd4 <- list(C_pred=C_pred, C_meso=C_meso, C_prey=C_prey,
                   z_land_pred=z_land_pred, z_land_prey=z_land_prey)
+      # Initial values; latent abundances started at max observed count + 1.
       ni4 <- list(a_int=0,a_env=0,p_pred=0.5,
                   c_int=0,c_pred=0,p_meso=0.5,
                   b_int=0,b_env=0,b_pred=0,b_meso=0,p_prey=0.5,
@@ -699,6 +840,7 @@ fit_all_models <- function(sim_out,
                    "indirect_Env1_via_pred","indirect_Env1_via_meso",
                    "indirect_pred_via_meso","total_pred_on_prey","total_Env1_on_prey")
     } else {
+      # (meso, no landscape) - same structure, landscape terms dropped. 
       coabund_code_meso <- nimbleCode({
         a_int ~ dnorm(0,sd=2); a_env ~ dnorm(0,sd=2); p_pred ~ dbeta(1,1)
         c_int ~ dnorm(0,sd=2); c_pred ~ dnorm(0,sd=2); p_meso ~ dbeta(1,1)
@@ -735,7 +877,7 @@ fit_all_models <- function(sim_out,
                    "indirect_pred_via_meso","total_pred_on_prey","total_Env1_on_prey")
     }
   } else {
-    
+    # Non-meso co-abundance (predator -> prey only)
    if (use_landscape) {
     coabund_code <- nimbleCode({
       a_int ~ dnorm(0,sd=2); a_env ~ dnorm(0,sd=2); p_pred ~ dbeta(1,1)  # Beta prior
@@ -792,25 +934,25 @@ fit_all_models <- function(sim_out,
   } 
     }
   
-    # These run for BOTH meso and non-meso:
-    m4 <- nimbleModel(if (meso) coabund_code_meso else coabund_code,
-                      nim_const_abund, nd4, ni4)
-    cm4    <- compileNimble(m4)
-    conf4  <- configureMCMC(cm4, monitors=params4)
-    mcmc4  <- buildMCMC(conf4)
-    cmcmc4 <- compileNimble(mcmc4, project=m4)
-    samps4 <- runMCMC(cmcmc4, niter=nimble_iter, nburnin=nimble_burnin,
-                      nchains=nimble_chains, thin=nimble_thin,
-                      samplesAsCodaMCMC=TRUE)
-    results$coabund <- if (setting=="LOCAL") {
-      list(samples=samps4, summary=post_summary(samps4,params4))
-    } else list(summary=post_summary(samps4,params4))
+    # Compile and run the co-abundance model (both meso and non-meso paths)
+  # m4 <- nimbleModel(if (meso) coabund_code_meso else coabund_code,
+  #                   nim_const_abund, nd4, ni4)
+  # cm4    <- compileNimble(m4)
+  # conf4  <- configureMCMC(cm4, monitors=params4)
+  # mcmc4  <- buildMCMC(conf4)
+  # cmcmc4 <- compileNimble(mcmc4, project=m4)
+  # samps4 <- runMCMC(cmcmc4, niter=nimble_iter, nburnin=nimble_burnin,
+  #                   nchains=nimble_chains, thin=nimble_thin,
+  #                   samplesAsCodaMCMC=TRUE)
+  results$coabund <- list(summary = NULL)
   
 
-  
-  
-  # ── Model 5: Integrated N-mixture SEM ────────────────────────────────────
-    message("\n--- Model 4c: Integrated N-mixture SEM (NIMBLE) ---")
+    # ── Model 4: Abundance hSEM (integrated N-mixture, NIMBLE) ────────────────
+    # The joint/integrated model: estimates the detection process and the SEM
+    # path structure simultaneously in one NIMBLE model, rather than plugging
+    # point abundance estimates into a separate regression (the two-step models).
+    # This is Model 4 in the paper, the abundance-family hSEM.
+    message("\n--- Model 4: Abundance hSEM (NIMBLE) ---")
     
     if (meso) {
       if (use_landscape) {
@@ -970,7 +1112,7 @@ fit_all_models <- function(sim_out,
     samps5 <- runMCMC(cmcmc5, niter=nimble_iter, nburnin=nimble_burnin,
                       nchains=nimble_chains, thin=nimble_thin,
                       samplesAsCodaMCMC=TRUE)
-    results$sem_nimble <- if (setting=="LOCAL") {
+    results$sem_nmix <- if (setting=="LOCAL") {
       list(samples=samps5, summary=post_summary(samps5,params5))
     } else list(summary=post_summary(samps5,params5))
   
