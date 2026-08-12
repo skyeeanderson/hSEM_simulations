@@ -31,13 +31,12 @@ scenarios <- c(
   "v4rn_rare_1000_meso_LF"
 )
 
-# NIMBLE model names as stored in fit object — must match results$ names
-# 4a = coabund_nimble, 4b = occ_sem_nimble, 4c = sem_nimble
+# NIMBLE model names as stored in the fit object — keys must match results$ names.
+# Co-abundance is exploratory and not reported, so it is omitted here.
 nimble_models <- c(
-  coabund    = "4. Co-abundance (N-mixture)",
-  sem_nimble = "5. Integrated N-mixture SEM",
-  rn_nimble  = "8. Integrated RN SEM",
-  occ_sem    = "12. Integrated occupancy SEM"
+  sem_nimble = "4. Abundance hSEM",
+  rn_nimble  = "7. Royle-Nichols hSEM",
+  occ_sem    = "11. Occupancy hSEM"
 )
 
 # ADD near top of extract script:
