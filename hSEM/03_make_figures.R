@@ -66,17 +66,17 @@ occ_all_models    <- c(occ_lmer_models, occ_nimble_models)
 
 # ── Method labels ─────────────────────────────────────────────────────────────
 method_labels <- c(
-  psem_maxcount  = "1: Naive capture\nrate SEM",
+  psem_maxcount  = "1: Naive count index\nrate SEM",
   psem_blup_null = "2: Two-step null\nN-mix SEM",
   psem_blup_full = "3: Two-step N-mix\nwith covariates SEM",
-  sem_nmix       = "4: Integrated detection\ncorrected N-mix SEM",
+  sem_nmix       = "4: Abundance hSEM",
   rn_blup_null   = "5: Two-step null\nRN SEM",
   rn_blup_full   = "6: Two-step RN\nwith covariates SEM",
-  rn_nmix        = "7: Integrated detection\ncorrected RN SEM",
+  rn_nmix        = "7: Royle-Nichols hSEM",
   naive_sem      = "8: Naive detection\nrate SEM",
   null_occ_sem   = "9: Two-step null\nOcc SEM",
   full_occ_sem   = "10: Two-step Occ\nwith covariates SEM",
-  occ_sem        = "11: Integrated detection\ncorrected Occ SEM"
+  occ_sem        = "11: Occupancy hSEM"
 )
 
 # ── Colours ───────────────────────────────────────────────────────────────────
