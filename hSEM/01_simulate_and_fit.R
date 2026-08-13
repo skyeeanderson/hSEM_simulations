@@ -423,6 +423,22 @@ fit_all_models <- function(sim_out,
     v <- tryCatch(lst[[nm]], error=function(e) def)
     if (is.null(v)||length(v)==0) def else as.numeric(v) }
   
+  # Wald 95% bounds for a coefficient in a fitted glm / lm / lmer / glmer.
+  # vcov() works across all four classes. Returns c(lo, hi), or c(NA, NA) if the
+  # coefficient or model is missing. Wald (not profile) intervals are used
+  # deliberately: they are the naive second-stage interval a two-step analyst
+  # would report, whose under-coverage is what demonstrates that first-stage
+  # uncertainty was not propagated.
+  wald_ci <- function(m, nm) {
+    if (is.null(m)) return(c(NA_real_, NA_real_))
+    est <- tryCatch({
+      if (inherits(m, "merMod")) lme4::fixef(m)[nm] else coef(m)[nm]
+    }, error = function(e) NA_real_)
+    se <- tryCatch(sqrt(diag(vcov(m)))[nm], error = function(e) NA_real_)
+    if (is.na(est) || is.na(se)) return(c(NA_real_, NA_real_))
+    c(est - 1.96 * se, est + 1.96 * se)
+  }
+  
   # ── NIMBLE helper: compile and run ───────────────────────────────────────────
   # Build, compile and run an MCMC for a NIMBLE model, returning coda samples.
   # USed by the hSEM models
@@ -448,14 +464,11 @@ fit_all_models <- function(sim_out,
   # the Poisson GLM.
   fit_abund_sem <- function(N_hat_pred, N_hat_prey, label,
                             N_hat_meso=NULL) {
-    # Round to integers, floor at 1 (Poisson GLM response must be a count >= 0;
-    # flooring at 1 avoids zeros that would otherwise arise from rounding down)
+    # Round to integers, floor at 1 (Poisson GLM response must be a count).
     N_hat_pred <- pmax(round(N_hat_pred), 1L)
     N_hat_prey <- pmax(round(N_hat_prey), 1L)
     if (!is.null(N_hat_meso)) N_hat_meso <- pmax(round(N_hat_meso), 1L)
     
-    # Fit one path regression; drop the landscape random effect when off.
-    # Returns NULL on failure
     fit_glm <- function(formula_str, data) {
       if (use_landscape)
         tryCatch(lme4::glmer(as.formula(formula_str), data=data, family=poisson),
@@ -465,7 +478,6 @@ fit_all_models <- function(sim_out,
                      data=data, family=poisson), error=function(e) NULL)
     }
     if (!is.null(N_hat_meso)) {
-      # Meso versions: three path regressions (predator, meso, prey)
       df_pred <- data.frame(Npred=N_hat_pred[idx_pred], Env1=Env1[idx_pred],
                             landscape=land_f[idx_pred])
       df_meso <- data.frame(Nmeso=N_hat_meso, Npred=N_hat_pred,
@@ -476,29 +488,31 @@ fit_all_models <- function(sim_out,
       m1 <- fit_glm("Npred ~ Env1 + (1|landscape)", df_pred)
       m2 <- fit_glm("Nmeso ~ Env1 + Npred + (1|landscape)", df_meso)
       m3 <- fit_glm("Nprey ~ Env2 + Npred + Nmeso + (1|landscape)", df_prey)
-      # If any path failed to fig, return all -NA so this replicate is flagged 
       if (is.null(m1)||is.null(m2)||is.null(m3))
         return(list(label=label, a_int=NA,c_int=NA,b_int=NA,a_env=NA,b_env=NA,
-                    b_pred=NA,c_pred=NA,b_meso=NA,indirect_Env1=NA,
+                    b_pred=NA,c_pred=NA,b_meso=NA,
+                    b_pred_lo=NA,b_pred_hi=NA,c_pred_lo=NA,c_pred_hi=NA,
+                    b_meso_lo=NA,b_meso_hi=NA,indirect_Env1=NA,
                     indirect_pred_via_meso=NA,total_pred_on_prey=NA,
                     indirect_Env1_via_meso=NA,total_Env1_on_prey=NA))
-      
-      # Extract fixed effects (fixef under lmer, coef under plain glm)
       cf1 <- coef(m1); cf2 <- coef(m2); cf3 <- coef(m3)
       if (use_landscape) { cf1 <- lme4::fixef(m1); cf2 <- lme4::fixef(m2)
       cf3 <- lme4::fixef(m3) }
       bE <- cf1["Env1"]; bpp <- cf3["Npred"]; cpm <- cf2["Npred"]; bmp <- cf3["Nmeso"]
-      
-      # Reconstruct direct, indirect, and total effects from the path products 
+      bpred_ci <- wald_ci(m3, "Npred")
+      cpred_ci <- wald_ci(m2, "Npred")
+      bmeso_ci <- wald_ci(m3, "Nmeso")
       return(list(label=label, a_int=cf1["(Intercept)"], c_int=cf2["(Intercept)"],
                   b_int=cf3["(Intercept)"], a_env=bE, b_env=cf3["Env2"],
                   b_pred=bpp, c_pred=cpm, b_meso=bmp,
+                  b_pred_lo=bpred_ci[1], b_pred_hi=bpred_ci[2],
+                  c_pred_lo=cpred_ci[1], c_pred_hi=cpred_ci[2],
+                  b_meso_lo=bmeso_ci[1], b_meso_hi=bmeso_ci[2],
                   indirect_Env1=bE*bpp, indirect_pred_via_meso=cpm*bmp,
                   total_pred_on_prey=bpp+cpm*bmp,
                   indirect_Env1_via_meso=bE*cpm*bmp,
                   total_Env1_on_prey=bE*bpp+bE*cpm*bmp))
     } else {
-      # Non-meso version: two path regressions (predator, prey)
       df_pred <- data.frame(Npred=N_hat_pred[idx_pred], Env1=Env1[idx_pred],
                             landscape=land_f[idx_pred])
       df_prey <- data.frame(Nprey=N_hat_prey[idx_prey], Npred=N_hat_pred[idx_prey],
@@ -507,12 +521,14 @@ fit_all_models <- function(sim_out,
       m2 <- fit_glm("Nprey ~ Env2 + Npred + (1|landscape)", df_prey)
       if (is.null(m1)||is.null(m2))
         return(list(label=label,a_int=NA,b_int=NA,a_env=NA,b_env=NA,
-                    b_pred=NA,indirect_Env1=NA))
+                    b_pred=NA,b_pred_lo=NA,b_pred_hi=NA,indirect_Env1=NA))
       cf1 <- coef(m1); cf2 <- coef(m2)
       if (use_landscape) { cf1 <- lme4::fixef(m1); cf2 <- lme4::fixef(m2) }
+      bpred_ci <- wald_ci(m2, "Npred")
       return(list(label=label, a_int=cf1["(Intercept)"],
                   b_int=cf2["(Intercept)"], a_env=cf1["Env1"],
                   b_env=cf2["Env2"], b_pred=cf2["Npred"],
+                  b_pred_lo=bpred_ci[1], b_pred_hi=bpred_ci[2],
                   indirect_Env1=cf1["Env1"]*cf2["Npred"]))
     }
   }
@@ -525,7 +541,6 @@ fit_all_models <- function(sim_out,
   # a central point of the comparison rather than a modelling error.
   # No rounding here because psi is continuous on [0,1].
   fit_occ_sem <- function(psi_pred, psi_prey, label, psi_meso=NULL) {
-    # Gaussian regressions (lmer with landscape, plain lm without)
     fit_lm <- function(formula_str, data) {
       if (use_landscape)
         tryCatch(lme4::lmer(as.formula(formula_str), data=data),
@@ -534,20 +549,20 @@ fit_all_models <- function(sim_out,
         tryCatch(lm(as.formula(sub("\\+ \\(1\\|landscape\\)","",formula_str)),
                     data=data), error=function(e) NULL)
     }
-    # If predator occupancy barely varies across sites, there is no signal to 
-    # regress on, so bail out with NAs rather than fit deenerate model 
+    # If predator occupancy barely varies, no signal to regress on — bail with NAs.
     if (sd(psi_pred, na.rm=TRUE) < 0.01) {
       if (!is.null(psi_meso))
         return(list(label=label, a_int=NA, c_int=NA, b_int=NA, a_env=NA, b_env=NA,
-                    b_pred=NA, c_pred=NA, b_meso=NA, indirect_Env1=NA,
+                    b_pred=NA, c_pred=NA, b_meso=NA,
+                    b_pred_lo=NA, b_pred_hi=NA, c_pred_lo=NA, c_pred_hi=NA,
+                    b_meso_lo=NA, b_meso_hi=NA, indirect_Env1=NA,
                     indirect_pred_via_meso=NA, total_pred_on_prey=NA,
                     indirect_Env1_via_meso=NA, total_Env1_on_prey=NA))
       else
         return(list(label=label, a_int=NA, b_int=NA, a_env=NA,
-                    b_env=NA, b_pred=NA, indirect_Env1=NA))
+                    b_env=NA, b_pred=NA, b_pred_lo=NA, b_pred_hi=NA, indirect_Env1=NA))
     }
     if (!is.null(psi_meso)) {
-      # Meso version: three path regressions on psi. 
       df_pred <- data.frame(psi_pred=psi_pred[idx_pred], Env1=Env1[idx_pred],
                             landscape=land_f[idx_pred])
       df_meso <- data.frame(psi_meso=psi_meso, psi_pred=psi_pred,
@@ -560,7 +575,9 @@ fit_all_models <- function(sim_out,
       m3 <- fit_lm("psi_prey ~ Env2 + psi_pred + psi_meso + (1|landscape)", df_prey)
       if (is.null(m1)||is.null(m2)||is.null(m3))
         return(list(label=label,a_int=NA,c_int=NA,b_int=NA,a_env=NA,b_env=NA,
-                    b_pred=NA,c_pred=NA,b_meso=NA,indirect_Env1=NA,
+                    b_pred=NA,c_pred=NA,b_meso=NA,
+                    b_pred_lo=NA,b_pred_hi=NA,c_pred_lo=NA,c_pred_hi=NA,
+                    b_meso_lo=NA,b_meso_hi=NA,indirect_Env1=NA,
                     indirect_pred_via_meso=NA,total_pred_on_prey=NA,
                     indirect_Env1_via_meso=NA,total_Env1_on_prey=NA))
       cf1 <- coef(m1); cf2 <- coef(m2); cf3 <- coef(m3)
@@ -568,15 +585,20 @@ fit_all_models <- function(sim_out,
       cf3 <- lme4::fixef(m3) }
       bE <- cf1["Env1"]; bpp <- cf3["psi_pred"]; cpm <- cf2["psi_pred"]
       bmp <- cf3["psi_meso"]
+      bpred_ci <- wald_ci(m3, "psi_pred")
+      cpred_ci <- wald_ci(m2, "psi_pred")
+      bmeso_ci <- wald_ci(m3, "psi_meso")
       return(list(label=label, a_int=cf1["(Intercept)"], c_int=cf2["(Intercept)"],
                   b_int=cf3["(Intercept)"], a_env=bE, b_env=cf3["Env2"],
                   b_pred=bpp, c_pred=cpm, b_meso=bmp,
+                  b_pred_lo=bpred_ci[1], b_pred_hi=bpred_ci[2],
+                  c_pred_lo=cpred_ci[1], c_pred_hi=cpred_ci[2],
+                  b_meso_lo=bmeso_ci[1], b_meso_hi=bmeso_ci[2],
                   indirect_Env1=bE*bpp, indirect_pred_via_meso=cpm*bmp,
                   total_pred_on_prey=bpp+cpm*bmp,
                   indirect_Env1_via_meso=bE*cpm*bmp,
                   total_Env1_on_prey=bE*bpp+bE*cpm*bmp))
     } else {
-      # Non-meso version: two path regressions on psi. 
       df_pred <- data.frame(psi_pred=psi_pred[idx_pred], Env1=Env1[idx_pred],
                             landscape=land_f[idx_pred])
       df_prey <- data.frame(psi_prey=psi_prey[idx_prey], psi_pred=psi_pred[idx_prey],
@@ -585,12 +607,14 @@ fit_all_models <- function(sim_out,
       m2 <- fit_lm("psi_prey ~ Env2 + psi_pred + (1|landscape)", df_prey)
       if (is.null(m1)||is.null(m2))
         return(list(label=label,a_int=NA,b_int=NA,a_env=NA,
-                    b_env=NA,b_pred=NA,indirect_Env1=NA))
+                    b_env=NA,b_pred=NA,b_pred_lo=NA,b_pred_hi=NA,indirect_Env1=NA))
       cf1 <- coef(m1); cf2 <- coef(m2)
       if (use_landscape) { cf1 <- lme4::fixef(m1); cf2 <- lme4::fixef(m2) }
+      bpred_ci <- wald_ci(m2, "psi_pred")
       return(list(label=label, a_int=cf1["(Intercept)"],
                   b_int=cf2["(Intercept)"], a_env=cf1["Env1"],
                   b_env=cf2["Env2"], b_pred=cf2["psi_pred"],
+                  b_pred_lo=bpred_ci[1], b_pred_hi=bpred_ci[2],
                   indirect_Env1=cf1["Env1"]*cf2["psi_pred"]))
     }
   }
@@ -1599,6 +1623,16 @@ fit_all_models <- function(sim_out,
     }, error = function(e) NA_real_)
   }
   
+  # Read a stored posterior quantile (q2.5 / q97.5) for a NIMBLE model — the
+  # Bayesian analogue of the frequentist Wald bounds from wald_ci().
+  gpm4_q <- function(key, nm, q) {
+    tryCatch({
+      summ <- results[[key]]$summary
+      val  <- summ[[q]][summ$param == nm][1]
+      if (is.null(val) || length(val) == 0) NA_real_ else as.numeric(val)
+    }, error = function(e) NA_real_)
+  }
+  
   # NOTE ON DERIVED-QUANTITY NAMES: the indirect/total effects are named
   # slightly differently by different sources of the same quantity. The lmer
   # helpers store "indirect_Env1"; the NIMBLE models store
@@ -1614,46 +1648,53 @@ fit_all_models <- function(sim_out,
         estimand = c("a_int","a_env","p_pred",
                      "b_int","b_env","b_pred","p_prey",
                      "sigma_land_pred","sigma_land_prey",
-                     "indirect_Env1","total_Env1"),
+                     "indirect_Env1","total_Env1",
+                     "b_pred_lo","b_pred_hi"),
         truth = c(truth$a_int, truth$a_env, truth$p_pred,
                   truth$b_int, truth$b_env, truth$b_pred, truth$p_prey,
                   truth$sigma_land_pred, truth$sigma_land_prey,
-                  truth$indirect_Env1_via_pred, truth$total_Env1_on_prey),
+                  truth$indirect_Env1_via_pred, truth$total_Env1_on_prey,
+                  truth$b_pred, truth$b_pred),
         
         # Model 1: max count SEM (count scale; detection not estimated, so p=NA)
         psem_maxcount = c(
           get4("psem_maxcount","a_int"), get4("psem_maxcount","a_env"), NA,
           get4("psem_maxcount","b_int"), get4("psem_maxcount","b_env"),
           get4("psem_maxcount","b_pred"), NA, NA, NA,
-          get4("psem_maxcount","indirect_Env1"), NA),
+          get4("psem_maxcount","indirect_Env1"), NA,
+          get4("psem_maxcount","b_pred_lo"), get4("psem_maxcount","b_pred_hi")),
         
         # Model 2: two-step null N-mixture SEM
         psem_blup_null = c(
           get4("psem_blup_null","a_int"), get4("psem_blup_null","a_env"), NA,
           get4("psem_blup_null","b_int"), get4("psem_blup_null","b_env"),
           get4("psem_blup_null","b_pred"), NA, NA, NA,
-          get4("psem_blup_null","indirect_Env1"), NA),
+          get4("psem_blup_null","indirect_Env1"), NA,
+          get4("psem_blup_null","b_pred_lo"), get4("psem_blup_null","b_pred_hi")),
         
         # Model 3: two-step full N-mixture SEM
         psem_blup_full = c(
           get4("psem_blup_full","a_int"), get4("psem_blup_full","a_env"), NA,
           get4("psem_blup_full","b_int"), get4("psem_blup_full","b_env"),
           get4("psem_blup_full","b_pred"), NA, NA, NA,
-          get4("psem_blup_full","indirect_Env1"), NA),
+          get4("psem_blup_full","indirect_Env1"), NA,
+          get4("psem_blup_full","b_pred_lo"), get4("psem_blup_full","b_pred_hi")),
         
         # Model 5: two-step null RN SEM
         rn_blup_null = c(
           get4("rn_blup_null","a_int"), get4("rn_blup_null","a_env"), NA,
           get4("rn_blup_null","b_int"), get4("rn_blup_null","b_env"),
           get4("rn_blup_null","b_pred"), NA, NA, NA,
-          get4("rn_blup_null","indirect_Env1"), NA),
+          get4("rn_blup_null","indirect_Env1"), NA,
+          get4("rn_blup_null","b_pred_lo"), get4("rn_blup_null","b_pred_hi")),
         
-        # Model 6: two-step full RN SEM 
+        # Model 6: two-step full RN SEM
         rn_blup_full = c(
           get4("rn_blup_full","a_int"), get4("rn_blup_full","a_env"), NA,
           get4("rn_blup_full","b_int"), get4("rn_blup_full","b_env"),
           get4("rn_blup_full","b_pred"), NA, NA, NA,
-          get4("rn_blup_full","indirect_Env1"), NA),
+          get4("rn_blup_full","indirect_Env1"), NA,
+          get4("rn_blup_full","b_pred_lo"), get4("rn_blup_full","b_pred_hi")),
         
         # Model 7: RN hSEM (NIMBLE; r_* detection, log-scale b_pred)
         rn_nmix = c(
@@ -1664,7 +1705,8 @@ fit_all_models <- function(sim_out,
           if(use_landscape) gpm4("rn_nimble","sigma_land_pred") else NA,
           if(use_landscape) gpm4("rn_nimble","sigma_land_prey") else NA,
           gpm4("rn_nimble","indirect_Env1_on_prey"),
-          gpm4("rn_nimble","total_Env1_on_prey")),
+          gpm4("rn_nimble","total_Env1_on_prey"),
+          gpm4_q("rn_nimble","b_pred","q2.5"), gpm4_q("rn_nimble","b_pred","q97.5")),
         
         # Co-abundance (exploratory, disabled; column fills with NA)
         coabund = c(
@@ -1674,10 +1716,10 @@ fit_all_models <- function(sim_out,
           gpm4("coabund","b_pred"), gpm4("coabund","p_prey"),
           if(use_landscape) gpm4("coabund","sigma_land_pred") else NA,
           if(use_landscape) gpm4("coabund","sigma_land_prey") else NA,
-          gpm4("coabund","indirect_Env1"), NA),
+          gpm4("coabund","indirect_Env1"), NA,
+          NA, NA),
         
-        # Model 4: Abundance hSEM (NIMBLE; log-scale b_pred). Stored object is
-        # sem_nimble; the column is named sem_nmix (matches 03_make_figures.R).
+        # Model 4: Abundance hSEM (NIMBLE; log-scale b_pred)
         sem_nmix = c(
           gpm4("sem_nmix","a_int"), gpm4("sem_nmix","a_env"),
           gpm4("sem_nmix","p_pred"),
@@ -1686,17 +1728,18 @@ fit_all_models <- function(sim_out,
           if(use_landscape) gpm4("sem_nmix","sigma_land_pred") else NA,
           if(use_landscape) gpm4("sem_nmix","sigma_land_prey") else NA,
           gpm4("sem_nmix","indirect_Env1_on_prey"),
-          gpm4("sem_nmix","total_Env1_on_prey")),
+          gpm4("sem_nmix","total_Env1_on_prey"),
+          gpm4_q("sem_nmix","b_pred","q2.5"), gpm4_q("sem_nmix","b_pred","q97.5")),
         
         # Model 8: naive detection rate SEM (probability scale)
         naive_sem = c(
           get4("naive_sem","a_int"), get4("naive_sem","a_env"), NA,
           get4("naive_sem","b_int"), get4("naive_sem","b_env"),
           get4("naive_sem","b_pred"), NA, NA, NA,
-          get4("naive_sem","indirect_Env1"), NA),
+          get4("naive_sem","indirect_Env1"), NA,
+          get4("naive_sem","b_pred_lo"), get4("naive_sem","b_pred_hi")),
         
-        # Model 9: two-step null occupancy SEM. Detection p recovered from the
-        # occupancy sub-model's p(Int) via plogis (logit -> probability).
+        # Model 9: two-step null occupancy SEM
         null_occ_sem = c(
           get4("null_occ_sem","a_int"), get4("null_occ_sem","a_env"),
           if(!is.null(occ_pred_null)) as.numeric(plogis(coef(occ_pred_null)["p(Int)"])) else NA_real_,
@@ -1704,7 +1747,8 @@ fit_all_models <- function(sim_out,
           get4("null_occ_sem","b_pred"),
           if(!is.null(occ_prey_null)) as.numeric(plogis(coef(occ_prey_null)["p(Int)"])) else NA_real_,
           NA, NA,
-          get4("null_occ_sem","indirect_Env1"), NA),
+          get4("null_occ_sem","indirect_Env1"), NA,
+          get4("null_occ_sem","b_pred_lo"), get4("null_occ_sem","b_pred_hi")),
         
         # Model 10: two-step full occupancy SEM
         full_occ_sem = c(
@@ -1714,7 +1758,8 @@ fit_all_models <- function(sim_out,
           get4("full_occ_sem","b_pred"),
           if(!is.null(occ_prey_full)) as.numeric(plogis(coef(occ_prey_full)["p(Int)"])) else NA_real_,
           NA, NA,
-          get4("full_occ_sem","indirect_Env1"), NA),
+          get4("full_occ_sem","indirect_Env1"), NA,
+          get4("full_occ_sem","b_pred_lo"), get4("full_occ_sem","b_pred_hi")),
         
         # Model 11: occupancy hSEM (NIMBLE; logit-scale b_pred). Detection lp_*
         # converted to probability via plogis for display.
@@ -1727,7 +1772,8 @@ fit_all_models <- function(sim_out,
           if(use_landscape) gpm4("occ_sem","sigma_land_pred") else NA,
           if(use_landscape) gpm4("occ_sem","sigma_land_prey") else NA,
           gpm4("occ_sem","indirect_Env1"),
-          gpm4("occ_sem","total_Env1"))
+          gpm4("occ_sem","total_Env1"),
+          gpm4_q("occ_sem","b_pred","q2.5"), gpm4_q("occ_sem","b_pred","q97.5"))
       )
     }, error = function(e) {
       message("Comparison error: ", e$message)
@@ -1744,7 +1790,8 @@ fit_all_models <- function(sim_out,
           "b_int","b_env","b_pred","b_meso","p_prey",
           "sigma_land_pred","sigma_land_meso","sigma_land_prey",
           "indirect_Env1_via_pred","indirect_Env1_via_meso",
-          "indirect_pred_via_meso","total_pred_on_prey","total_Env1_on_prey"),
+          "indirect_pred_via_meso","total_pred_on_prey","total_Env1_on_prey",
+          "b_pred_lo","b_pred_hi","c_pred_lo","c_pred_hi","b_meso_lo","b_meso_hi"),
         truth = c(
           truth$a_int, truth$a_env, truth$p_pred,
           truth$c_int, truth$c_pred, truth$p_meso,
@@ -1752,17 +1799,10 @@ fit_all_models <- function(sim_out,
           truth$sigma_land_pred, truth$sigma_land_meso, truth$sigma_land_prey,
           truth$indirect_Env1_via_pred, truth$indirect_Env1_via_meso,
           truth$indirect_pred_via_meso, truth$total_pred_on_prey,
-          truth$total_Env1_on_prey),
-        
-        # Columns below are the meso versions of the same models as non-meso:
-        #   psem_maxcount = Model 1, psem_blup_null/full = Models 2/3,
-        #   rn_blup_null/full = Models 5/6, rn_nmix = Model 7,
-        #   coabund = exploratory (disabled), sem_nmix = Model 4,
-        #   naive_sem = Model 8, null/full_occ_sem = Models 9/10,
-        #   occ_sem = Model 11.
-        
-        # Model 1: max count SEM (count scale; detection not estimated, so p=NA)
-         psem_maxcount = c(
+          truth$total_Env1_on_prey,
+          truth$b_pred, truth$b_pred, truth$c_pred, truth$c_pred,
+          truth$b_meso, truth$b_meso),
+        psem_maxcount = c(
           get4("psem_maxcount","a_int"),  get4("psem_maxcount","a_env"),  NA,
           get4("psem_maxcount","c_int"),  get4("psem_maxcount","c_pred"), NA,
           get4("psem_maxcount","b_int"),  get4("psem_maxcount","b_env"),
@@ -1772,9 +1812,10 @@ fit_all_models <- function(sim_out,
           get4("psem_maxcount","indirect_Env1_via_meso"),
           get4("psem_maxcount","indirect_pred_via_meso"),
           get4("psem_maxcount","total_pred_on_prey"),
-          get4("psem_maxcount","total_Env1_on_prey")),
-        
-        # Model 2: two-step null N-mixture SEM
+          get4("psem_maxcount","total_Env1_on_prey"),
+          get4("psem_maxcount","b_pred_lo"), get4("psem_maxcount","b_pred_hi"),
+          get4("psem_maxcount","c_pred_lo"), get4("psem_maxcount","c_pred_hi"),
+          get4("psem_maxcount","b_meso_lo"), get4("psem_maxcount","b_meso_hi")),
         psem_blup_null = c(
           get4("psem_blup_null","a_int"),  get4("psem_blup_null","a_env"),  NA,
           get4("psem_blup_null","c_int"),  get4("psem_blup_null","c_pred"), NA,
@@ -1785,9 +1826,10 @@ fit_all_models <- function(sim_out,
           get4("psem_blup_null","indirect_Env1_via_meso"),
           get4("psem_blup_null","indirect_pred_via_meso"),
           get4("psem_blup_null","total_pred_on_prey"),
-          get4("psem_blup_null","total_Env1_on_prey")),
-        
-        # Model 3: two-step full N-mixture SEM
+          get4("psem_blup_null","total_Env1_on_prey"),
+          get4("psem_blup_null","b_pred_lo"), get4("psem_blup_null","b_pred_hi"),
+          get4("psem_blup_null","c_pred_lo"), get4("psem_blup_null","c_pred_hi"),
+          get4("psem_blup_null","b_meso_lo"), get4("psem_blup_null","b_meso_hi")),
         psem_blup_full = c(
           get4("psem_blup_full","a_int"),  get4("psem_blup_full","a_env"),  NA,
           get4("psem_blup_full","c_int"),  get4("psem_blup_full","c_pred"), NA,
@@ -1798,9 +1840,10 @@ fit_all_models <- function(sim_out,
           get4("psem_blup_full","indirect_Env1_via_meso"),
           get4("psem_blup_full","indirect_pred_via_meso"),
           get4("psem_blup_full","total_pred_on_prey"),
-          get4("psem_blup_full","total_Env1_on_prey")),
-        
-        # Model 5: two-step null Royle-Nichols SEM
+          get4("psem_blup_full","total_Env1_on_prey"),
+          get4("psem_blup_full","b_pred_lo"), get4("psem_blup_full","b_pred_hi"),
+          get4("psem_blup_full","c_pred_lo"), get4("psem_blup_full","c_pred_hi"),
+          get4("psem_blup_full","b_meso_lo"), get4("psem_blup_full","b_meso_hi")),
         rn_blup_null = c(
           get4("rn_blup_null","a_int"),  get4("rn_blup_null","a_env"),  NA,
           get4("rn_blup_null","c_int"),  get4("rn_blup_null","c_pred"), NA,
@@ -1811,9 +1854,10 @@ fit_all_models <- function(sim_out,
           get4("rn_blup_null","indirect_Env1_via_meso"),
           get4("rn_blup_null","indirect_pred_via_meso"),
           get4("rn_blup_null","total_pred_on_prey"),
-          get4("rn_blup_null","total_Env1_on_prey")),
-        
-        # Model 6: two-step full Royle-Nichols SEM
+          get4("rn_blup_null","total_Env1_on_prey"),
+          get4("rn_blup_null","b_pred_lo"), get4("rn_blup_null","b_pred_hi"),
+          get4("rn_blup_null","c_pred_lo"), get4("rn_blup_null","c_pred_hi"),
+          get4("rn_blup_null","b_meso_lo"), get4("rn_blup_null","b_meso_hi")),
         rn_blup_full = c(
           get4("rn_blup_full","a_int"),  get4("rn_blup_full","a_env"),  NA,
           get4("rn_blup_full","c_int"),  get4("rn_blup_full","c_pred"), NA,
@@ -1824,14 +1868,18 @@ fit_all_models <- function(sim_out,
           get4("rn_blup_full","indirect_Env1_via_meso"),
           get4("rn_blup_full","indirect_pred_via_meso"),
           get4("rn_blup_full","total_pred_on_prey"),
-          get4("rn_blup_full","total_Env1_on_prey")),
-        
-        # Model 7: Royle-Nichols hSEM (NIMBLE; r_* detection, log-scale b_pred)
+          get4("rn_blup_full","total_Env1_on_prey"),
+          get4("rn_blup_full","b_pred_lo"), get4("rn_blup_full","b_pred_hi"),
+          get4("rn_blup_full","c_pred_lo"), get4("rn_blup_full","c_pred_hi"),
+          get4("rn_blup_full","b_meso_lo"), get4("rn_blup_full","b_meso_hi")),
         rn_nmix = c(
-          gpm4("rn_nimble","a_int"),  gpm4("rn_nimble","a_env"),  gpm4("rn_nimble","r_pred"),
-          gpm4("rn_nimble","c_int"),  gpm4("rn_nimble","c_pred"), gpm4("rn_nimble","r_meso"),
-          gpm4("rn_nimble","b_int"),  gpm4("rn_nimble","b_env"),
-          gpm4("rn_nimble","b_pred"), gpm4("rn_nimble","b_meso"), gpm4("rn_nimble","r_prey"),
+          gpm4("rn_nimble","a_int"), gpm4("rn_nimble","a_env"),
+          gpm4("rn_nimble","r_pred"),
+          gpm4("rn_nimble","c_int"), gpm4("rn_nimble","c_pred"),
+          gpm4("rn_nimble","r_meso"),
+          gpm4("rn_nimble","b_int"), gpm4("rn_nimble","b_env"),
+          gpm4("rn_nimble","b_pred"), gpm4("rn_nimble","b_meso"),
+          gpm4("rn_nimble","r_prey"),
           if(use_landscape) gpm4("rn_nimble","sigma_land_pred") else NA,
           if(use_landscape) gpm4("rn_nimble","sigma_land_meso") else NA,
           if(use_landscape) gpm4("rn_nimble","sigma_land_prey") else NA,
@@ -1839,14 +1887,18 @@ fit_all_models <- function(sim_out,
           gpm4("rn_nimble","indirect_Env1_via_meso"),
           gpm4("rn_nimble","indirect_pred_via_meso"),
           gpm4("rn_nimble","total_pred_on_prey"),
-          gpm4("rn_nimble","total_Env1_on_prey")),
-        
-        # Co-abundance (exploratory, disabled; column fills with NA)
+          gpm4("rn_nimble","total_Env1_on_prey"),
+          gpm4_q("rn_nimble","b_pred","q2.5"), gpm4_q("rn_nimble","b_pred","q97.5"),
+          gpm4_q("rn_nimble","c_pred","q2.5"), gpm4_q("rn_nimble","c_pred","q97.5"),
+          gpm4_q("rn_nimble","b_meso","q2.5"), gpm4_q("rn_nimble","b_meso","q97.5")),
         coabund = c(
-          gpm4("coabund","a_int"),  gpm4("coabund","a_env"),  gpm4("coabund","p_pred"),
-          gpm4("coabund","c_int"),  gpm4("coabund","c_pred"), gpm4("coabund","p_meso"),
-          gpm4("coabund","b_int"),  gpm4("coabund","b_env"),
-          gpm4("coabund","b_pred"), gpm4("coabund","b_meso"), gpm4("coabund","p_prey"),
+          gpm4("coabund","a_int"), gpm4("coabund","a_env"),
+          gpm4("coabund","p_pred"),
+          gpm4("coabund","c_int"), gpm4("coabund","c_pred"),
+          gpm4("coabund","p_meso"),
+          gpm4("coabund","b_int"), gpm4("coabund","b_env"),
+          gpm4("coabund","b_pred"), gpm4("coabund","b_meso"),
+          gpm4("coabund","p_prey"),
           if(use_landscape) gpm4("coabund","sigma_land_pred") else NA,
           if(use_landscape) gpm4("coabund","sigma_land_meso") else NA,
           if(use_landscape) gpm4("coabund","sigma_land_prey") else NA,
@@ -1854,15 +1906,16 @@ fit_all_models <- function(sim_out,
           gpm4("coabund","indirect_Env1_via_meso"),
           gpm4("coabund","indirect_pred_via_meso"),
           gpm4("coabund","total_pred_on_prey"),
-          gpm4("coabund","total_Env1_on_prey")),
-        
-        # Model 4: Abundance hSEM (NIMBLE; log-scale b_pred). Stored object is
-        # sem_nimble; the column is named sem_nmix (matches 03_make_figures.R).
+          gpm4("coabund","total_Env1_on_prey"),
+          NA, NA, NA, NA, NA, NA),
         sem_nmix = c(
-          gpm4("sem_nmix","a_int"),  gpm4("sem_nmix","a_env"),  gpm4("sem_nmix","p_pred"),
-          gpm4("sem_nmix","c_int"),  gpm4("sem_nmix","c_pred"), gpm4("sem_nmix","p_meso"),
-          gpm4("sem_nmix","b_int"),  gpm4("sem_nmix","b_env"),
-          gpm4("sem_nmix","b_pred"), gpm4("sem_nmix","b_meso"), gpm4("sem_nmix","p_prey"),
+          gpm4("sem_nmix","a_int"), gpm4("sem_nmix","a_env"),
+          gpm4("sem_nmix","p_pred"),
+          gpm4("sem_nmix","c_int"), gpm4("sem_nmix","c_pred"),
+          gpm4("sem_nmix","p_meso"),
+          gpm4("sem_nmix","b_int"), gpm4("sem_nmix","b_env"),
+          gpm4("sem_nmix","b_pred"), gpm4("sem_nmix","b_meso"),
+          gpm4("sem_nmix","p_prey"),
           if(use_landscape) gpm4("sem_nmix","sigma_land_pred") else NA,
           if(use_landscape) gpm4("sem_nmix","sigma_land_meso") else NA,
           if(use_landscape) gpm4("sem_nmix","sigma_land_prey") else NA,
@@ -1870,9 +1923,10 @@ fit_all_models <- function(sim_out,
           gpm4("sem_nmix","indirect_Env1_via_meso"),
           gpm4("sem_nmix","indirect_pred_via_meso"),
           gpm4("sem_nmix","total_pred_on_prey"),
-          gpm4("sem_nmix","total_Env1_on_prey")),
-        
-        # Model 8: naive detection rate SEM (probability scale)
+          gpm4("sem_nmix","total_Env1_on_prey"),
+          gpm4_q("sem_nmix","b_pred","q2.5"), gpm4_q("sem_nmix","b_pred","q97.5"),
+          gpm4_q("sem_nmix","c_pred","q2.5"), gpm4_q("sem_nmix","c_pred","q97.5"),
+          gpm4_q("sem_nmix","b_meso","q2.5"), gpm4_q("sem_nmix","b_meso","q97.5")),
         naive_sem = c(
           get4("naive_sem","a_int"),  get4("naive_sem","a_env"),  NA,
           get4("naive_sem","c_int"),  get4("naive_sem","c_pred"), NA,
@@ -1883,49 +1937,44 @@ fit_all_models <- function(sim_out,
           get4("naive_sem","indirect_Env1_via_meso"),
           get4("naive_sem","indirect_pred_via_meso"),
           get4("naive_sem","total_pred_on_prey"),
-          get4("naive_sem","total_Env1_on_prey")),
-        
-        # Model 9: two-step null occupancy SEM. Detection p recovered from the
-        # occupancy sub-model's p(Int) via plogis (logit -> probability).
+          get4("naive_sem","total_Env1_on_prey"),
+          get4("naive_sem","b_pred_lo"), get4("naive_sem","b_pred_hi"),
+          get4("naive_sem","c_pred_lo"), get4("naive_sem","c_pred_hi"),
+          get4("naive_sem","b_meso_lo"), get4("naive_sem","b_meso_hi")),
         null_occ_sem = c(
-          get4("null_occ_sem","a_int"),  get4("null_occ_sem","a_env"),
-          if(!is.null(occ_pred_null)) as.numeric(plogis(coef(occ_pred_null)["p(Int)"])) else NA_real_,
-          get4("null_occ_sem","c_int"),  get4("null_occ_sem","c_pred"),
-          if(!is.null(occ_meso_null)) as.numeric(plogis(coef(occ_meso_null)["p(Int)"])) else NA_real_,
+          get4("null_occ_sem","a_int"),  get4("null_occ_sem","a_env"),  NA,
+          get4("null_occ_sem","c_int"),  get4("null_occ_sem","c_pred"), NA,
           get4("null_occ_sem","b_int"),  get4("null_occ_sem","b_env"),
-          get4("null_occ_sem","b_pred"), get4("null_occ_sem","b_meso"),
-          if(!is.null(occ_prey_null)) as.numeric(plogis(coef(occ_prey_null)["p(Int)"])) else NA_real_,
+          get4("null_occ_sem","b_pred"), get4("null_occ_sem","b_meso"), NA,
           NA, NA, NA,
           get4("null_occ_sem","indirect_Env1"),
           get4("null_occ_sem","indirect_Env1_via_meso"),
           get4("null_occ_sem","indirect_pred_via_meso"),
           get4("null_occ_sem","total_pred_on_prey"),
-          get4("null_occ_sem","total_Env1_on_prey")),
-        
-        # Model 10: two-step full occupancy SEM
+          get4("null_occ_sem","total_Env1_on_prey"),
+          get4("null_occ_sem","b_pred_lo"), get4("null_occ_sem","b_pred_hi"),
+          get4("null_occ_sem","c_pred_lo"), get4("null_occ_sem","c_pred_hi"),
+          get4("null_occ_sem","b_meso_lo"), get4("null_occ_sem","b_meso_hi")),
         full_occ_sem = c(
-          get4("full_occ_sem","a_int"),  get4("full_occ_sem","a_env"),
-          if(!is.null(occ_pred_full)) as.numeric(plogis(coef(occ_pred_full)["p(Int)"])) else NA_real_,
-          get4("full_occ_sem","c_int"),  get4("full_occ_sem","c_pred"),
-          if(!is.null(occ_meso_full)) as.numeric(plogis(coef(occ_meso_full)["p(Int)"])) else NA_real_,
+          get4("full_occ_sem","a_int"),  get4("full_occ_sem","a_env"),  NA,
+          get4("full_occ_sem","c_int"),  get4("full_occ_sem","c_pred"), NA,
           get4("full_occ_sem","b_int"),  get4("full_occ_sem","b_env"),
-          get4("full_occ_sem","b_pred"), get4("full_occ_sem","b_meso"),
-          if(!is.null(occ_prey_full)) as.numeric(plogis(coef(occ_prey_full)["p(Int)"])) else NA_real_,
+          get4("full_occ_sem","b_pred"), get4("full_occ_sem","b_meso"), NA,
           NA, NA, NA,
           get4("full_occ_sem","indirect_Env1"),
           get4("full_occ_sem","indirect_Env1_via_meso"),
           get4("full_occ_sem","indirect_pred_via_meso"),
           get4("full_occ_sem","total_pred_on_prey"),
-          get4("full_occ_sem","total_Env1_on_prey")),
-        
-        # Model 11: occupancy hSEM (NIMBLE; logit-scale b_pred). Detection lp_*
-        # converted to probability via plogis for display.
+          get4("full_occ_sem","total_Env1_on_prey"),
+          get4("full_occ_sem","b_pred_lo"), get4("full_occ_sem","b_pred_hi"),
+          get4("full_occ_sem","c_pred_lo"), get4("full_occ_sem","c_pred_hi"),
+          get4("full_occ_sem","b_meso_lo"), get4("full_occ_sem","b_meso_hi")),
         occ_sem = c(
-          gpm4("occ_sem","a_int"),  gpm4("occ_sem","a_env"),
+          gpm4("occ_sem","a_int"), gpm4("occ_sem","a_env"),
           as.numeric(plogis(gpm4("occ_sem","lp_pred"))),
-          gpm4("occ_sem","c_int"),  gpm4("occ_sem","c_pred"),
+          gpm4("occ_sem","c_int"), gpm4("occ_sem","c_pred"),
           as.numeric(plogis(gpm4("occ_sem","lp_meso"))),
-          gpm4("occ_sem","b_int"),  gpm4("occ_sem","b_env"),
+          gpm4("occ_sem","b_int"), gpm4("occ_sem","b_env"),
           gpm4("occ_sem","b_pred"), gpm4("occ_sem","b_meso"),
           as.numeric(plogis(gpm4("occ_sem","lp_prey"))),
           if(use_landscape) gpm4("occ_sem","sigma_land_pred") else NA,
@@ -1935,7 +1984,10 @@ fit_all_models <- function(sim_out,
           gpm4("occ_sem","indirect_Env1_via_meso"),
           gpm4("occ_sem","indirect_pred_via_meso"),
           gpm4("occ_sem","total_pred_on_prey"),
-          gpm4("occ_sem","total_Env1_on_prey"))
+          gpm4("occ_sem","total_Env1_on_prey"),
+          gpm4_q("occ_sem","b_pred","q2.5"), gpm4_q("occ_sem","b_pred","q97.5"),
+          gpm4_q("occ_sem","c_pred","q2.5"), gpm4_q("occ_sem","c_pred","q97.5"),
+          gpm4_q("occ_sem","b_meso","q2.5"), gpm4_q("occ_sem","b_meso","q97.5"))
       )
     }, error = function(e) {
       message("Comparison error: ", e$message)
