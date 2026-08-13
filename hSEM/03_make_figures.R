@@ -66,7 +66,7 @@ occ_all_models    <- c(occ_lmer_models, occ_nimble_models)
 
 # ── Method labels ─────────────────────────────────────────────────────────────
 method_labels <- c(
-  psem_maxcount  = "1: Naive count index\nrate SEM",
+  psem_maxcount  = "1: Naive count index\n SEM",
   psem_blup_null = "2: Two-step null\nN-mix SEM",
   psem_blup_full = "3: Two-step N-mix\nwith covariates SEM",
   sem_nmix       = "4: Abundance hSEM",
@@ -136,7 +136,7 @@ comp_long_clean <- comp_long %>%
 #
 make_bias_fig_FABC <- function(df, title, estimand_map,
                                subtitle   = "Percent bias = (estimate \u2212 truth) / |truth| \u00d7 100",
-                               ylim       = c(-200, 200),
+                               ylim       = c(200, 200),
                                fig_width  = 12,
                                fig_height = 7,
                                pal        = pal_12,
@@ -178,7 +178,7 @@ make_bias_fig_FABC <- function(df, title, estimand_map,
                  colour   = "black",
                  linewidth = 0.3,
                  position = position_dodge(0.75)) +
-    
+
     # Black summary points
     stat_summary(aes(group = nSites_label, shape = nSites_label),
                  fun      = mean,
@@ -421,7 +421,7 @@ cat("\nDone. 12 figures saved to:\n", fig_dir, "\n")
 # ── Summary-stats-only version of make_bias_fig_FABC ─────────────────────────
 make_bias_fig_summary <- function(df, title, estimand_map,
                                   subtitle   = "Mean \u00b1 SD; shape = sample size",
-                                  ylim       = c(-200, 200),
+                                  ylim       = c(-100, 100),
                                   fig_width  = 12,
                                   fig_height = 7,
                                   pal        = pal_12,
@@ -448,15 +448,15 @@ make_bias_fig_summary <- function(df, title, estimand_map,
     geom_hline(yintercept = 0, linetype = "dashed",
                linewidth = 0.6, colour = "grey40") +
     
-    # Coloured CI bars — dodged by nSites
-    stat_summary(aes(group = nSites_label),
-                 fun      = mean,
-                 fun.min  = function(x) mean(x) - sd(x),
-                 fun.max  = function(x) mean(x) + sd(x),
-                 geom     = "linerange",
-                 linewidth = 0.8,
-                 position = position_dodge(0.75)) +
-    
+    # # Coloured CI bars — dodged by nSites
+    # stat_summary(aes(group = nSites_label),
+    #              fun      = mean,
+    #              fun.min  = function(x) mean(x) - sd(x),
+    #              fun.max  = function(x) mean(x) + sd(x),
+    #              geom     = "linerange",
+    #              linewidth = 0.8,
+    #              position = position_dodge(0.75)) +
+    # 
     # Coloured summary points
     stat_summary(aes(group = nSites_label, shape = nSites_label),
                  fun      = mean,
@@ -512,7 +512,7 @@ make_bias_fig_summary(
   df           = df_abund,
   title        = "SIV % bias summary \u2014 Abundance models \u2014 Meso \u2014 No landscape",
   estimand_map = estimands_siv_meso,
-  ylim         = c(-200, 200),
+  ylim         = c(-100, 100),
   fig_width    = 12,
   fig_height   = 7,
   pal          = pal_12[abund_all_models],
@@ -530,7 +530,7 @@ make_bias_fig_summary(
   df           = df_rn,
   title        = "SIV % bias summary \u2014 Royle-Nichols models \u2014 Meso \u2014 No landscape",
   estimand_map = estimands_siv_meso,
-  ylim         = c(-200, 200),
+  ylim         = c(-100, 100),
   fig_width    = 12,
   fig_height   = 7,
   pal          = pal_12[rn_all_models],
@@ -547,7 +547,7 @@ make_bias_fig_summary(
   df           = df_occ,
   title        = "SIV % bias summary \u2014 Occupancy models \u2014 Meso \u2014 No landscape",
   estimand_map = estimands_siv_meso,
-  ylim         = c(-200, 200),
+  ylim         = c(-100, 100),
   fig_width    = 12,
   fig_height   = 7,
   pal          = pal_12[occ_all_models],
@@ -602,9 +602,9 @@ p_summary <- ggplot(summary_df,
                colour = "black", size = 2.5) +
   facet_grid(abundance ~ model_group, scales = "free_x", space = "free_x") + 
   scale_y_continuous(trans  = "log10",
-                     breaks = c(1, 10, 100, 1000, 10000),
+                     breaks = c(50, 100, 500, 1000, 3000),
                      labels = scales::label_comma()) +
-  coord_cartesian(ylim = c(NA, 10000)) +
+  coord_cartesian(ylim = c(50, 2900)) +
   scale_colour_manual(values = pal_use, name = "Model") +
   labs(title    = "Total absolute bias — all estimands — Meso — No landscape",
        subtitle = "Sum of |% bias| across SIVs, intercepts, and environmental effects per replicate\na_int excluded (truth = 0 for rare predator)",
@@ -630,20 +630,20 @@ p_summary_clean <- ggplot(summary_df,
                               y      = total_abs_bias,
                               colour = method_label,
                               shape  = abundance)) +
-  stat_summary(fun      = mean,
-               fun.min  = function(x) mean(x) - sd(x),
-               fun.max  = function(x) mean(x) + sd(x),
-               geom     = "linerange",
-               linewidth = 0.8,
-               position = position_dodge(width = 0.6)) +
+  # stat_summary(fun      = mean,
+  #              fun.min  = function(x) mean(x) - sd(x),
+  #              fun.max  = function(x) mean(x) + sd(x),
+  #              geom     = "linerange",
+  #              linewidth = 0.8,
+  #              position = position_dodge(width = 0.6)) +
   stat_summary(fun      = mean,
                geom     = "point",
                size     = 4,
                position = position_dodge(width = 0.6)) +
   facet_wrap(~ model_group, nrow = 1, scales = "free_x") +
-  coord_cartesian(ylim = c(20, 4900)) +
+  coord_cartesian(ylim = c(50, 3000)) +
   scale_y_continuous(trans  = "log10",
-                     breaks = c(20, 100, 1000, 5000),
+                     breaks = c(50, 100, 500, 1000, 3000),
                      labels = scales::label_comma()) +
   scale_colour_manual(values = pal_use, name = "Model") +
   scale_shape_manual(values = c("Abundant" = 16, "Rare" = 17),
@@ -663,7 +663,7 @@ p_summary_clean <- ggplot(summary_df,
         plot.subtitle    = element_text(size = 9, colour = "grey40"))
 
 ggsave(file.path(fig_dir, "F00_summary_bias_clean_meso_LF.png"),
-       p_summary_clean, width = 10, height = 5, dpi = 300)
+       p_summary_clean, width = 12, height = 5, dpi = 300)
 
 
  # ── Model 6 diagnostic histogram ─────────────────────────────────────────────
