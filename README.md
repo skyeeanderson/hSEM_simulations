@@ -45,7 +45,7 @@ The packages map onto the model families compared in the study: `unmarked` for t
 
 ## Citation
 
-[ADD: paper citation once available.]
+TBC
 
 ## License
 
