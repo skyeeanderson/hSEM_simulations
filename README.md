@@ -18,11 +18,19 @@ Each is evaluated across scenarios that vary species abundance (abundant / rare)
 
 The scripts run in order:
 
-1. `hSEM/01_simulate_and_fit.R` — simulates data under the three-species data-generating process and fits the eleven models. This is the simulation driver, run once per scenario on an HPC. It reads its scenario from the environment variables `SCENARIO`, `LANDSCAPE`, and `SETTING` (see "Running on an HPC" below) rather than command-line arguments.
-2. `hSEM/02_extract_results.R` — extracts parameter estimates from the fitted model outputs and assembles them for comparison against the known truth.
+1. `hSEM/01_simulate_and_fit.R` — simulates data under the three-species data-generating process and fits the eleven models. This is the simulation driver, run once per scenario on an HPC. It reads its scenario from the environment variables `SCENARIO`, `LANDSCAPE`, and `SETTING` (see "Running on an HPC" below) rather than command-line arguments. For each model it records point estimates and 95% interval bounds (Wald confidence intervals for the frequentist models, posterior credible intervals for the hSEMs) for the three species interaction values.
+2. `hSEM/02_extract_results.R` — extracts parameter estimates and interval bounds from the fitted model outputs and assembles them, with the known truth, into a single comparison table across scenarios.
 3. `hSEM/03_make_figures.R` — produces the percent-bias recovery figures.
+4. `hSEM/04_coverage_analysis.R` — computes interval coverage (the proportion of replicates whose 95% interval contains the truth) and mean interval width for each model, interaction pathway, and scenario.
 
-`hSEM/Chris_original_pred_prey_sim.R` is the original predator-prey simulation framework that this work adapts, retained for reference and attribution.
+Two further scripts turn the coverage output into paper-ready outputs:
+
+- `hSEM/build_table_S3.R` — builds the coverage-and-width supplementary table (Table S3) as a formatted Word document.
+- `hSEM/coverage_width_figure.R` — produces the coverage-against-width figure.
+
+Both exclude three occupancy two-step replicates (nSites = 50, abundant scenario) that failed to converge, consistent with the bias analysis.
+
+`hSEM/Chris_original_pred_prey_sim.R` is the original predator-prey simulation framework (developed by C. Sutherland) that this work adapts, retained for reference and attribution.
 
 ## Running on an HPC
 
@@ -39,9 +47,9 @@ This is a simulation study. All data is generated within the scripts from the da
 - **R** 4.4.2
 - **NIMBLE** for fitting the hierarchical (hSEM) models, with **coda** for posterior diagnostics
 - **JAGS**, installed separately, if running the JAGS-based fits
-- R packages: `nimble`, `coda`, `unmarked`, `glmmTMB`, `lme4`, `piecewiseSEM`, `tidyverse` (`dplyr`, `tidyr`, `ggplot2`), `patchwork`, `scales`, `paletteer`
+- R packages: `nimble`, `coda`, `unmarked`, `glmmTMB`, `lme4`, `piecewiseSEM`, `tidyverse` (`dplyr`, `tidyr`, `ggplot2`), `patchwork`, `scales`, `paletteer`, `ggrepel`, `flextable`, `officer`
 
-The packages map onto the model families compared in the study: `unmarked` for the occupancy, N-mixture, and Royle-Nichols fits, `piecewiseSEM` for the SEM approaches, `lme4` and `glmmTMB` for the GLM baselines, and `nimble` for the joint hSEMs.
+The packages map onto the model families compared in the study: `unmarked` for the occupancy, N-mixture, and Royle-Nichols fits, `piecewiseSEM` for the SEM approaches, `lme4` and `glmmTMB` for the GLM baselines, and `nimble` for the joint hSEMs. `flextable` and `officer` build the supplementary table; `ggrepel` labels the coverage figure.
 
 ## Citation
 
