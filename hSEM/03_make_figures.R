@@ -136,7 +136,7 @@ comp_long_clean <- comp_long %>%
 #
 make_bias_fig_FABC <- function(df, title, estimand_map,
                                subtitle   = "Percent bias = (estimate \u2212 truth) / |truth| \u00d7 100",
-                               ylim       = c(200, 200),
+                               ylim       = c(100, 100),
                                fig_width  = 12,
                                fig_height = 7,
                                pal        = pal_12,
@@ -274,9 +274,9 @@ for (is_meso in c(FALSE, TRUE)) {
     df           = df_base,
     title        = paste0("SIV % bias \u2014 Abundance models \u2014 ", meso_label, " \u2014 No landscape"),
     estimand_map = siv_map,
-    ylim         = c(-200, 200),
-    fig_width    = if (is_meso) 12 else 8,
-    fig_height   = 7,
+    ylim         = c(-100, 100),
+    fig_width    = if (is_meso) 11 else 8,
+    fig_height   = 6,
     pal          = pal_12[abund_all_models],
     fname        = file.path(fig_dir, paste0("FA_SIV_abund_", meso_tag, "_LF.png"))
   )
@@ -286,9 +286,9 @@ for (is_meso in c(FALSE, TRUE)) {
     df           = df_base,
     title        = paste0("Environmental % bias \u2014 Abundance models \u2014 ", meso_label, " \u2014 No landscape"),
     estimand_map = env_map,
-    ylim         = c(-200, 200),
-    fig_width    = 12,
-    fig_height   = 7,
+    ylim         = c(-100, 100),
+    fig_width    = 11,
+    fig_height   = 6,
     pal          = pal_12[abund_all_models],
     fname        = file.path(fig_dir, paste0("FB_Env_abund_", meso_tag, "_LF.png"))
   )
@@ -298,9 +298,9 @@ for (is_meso in c(FALSE, TRUE)) {
     df           = df_base,
     title        = paste0("Intercept % bias \u2014 Abundance models \u2014 ", meso_label, " \u2014 No landscape"),
     estimand_map = int_map,
-    ylim         = c(-200, 200),
-    fig_width    = if (is_meso) 12 else 12,
-    fig_height   = 7,
+    ylim         = c(-100, 100),
+    fig_width    = if (is_meso) 11 else 12,
+    fig_height   = 6,
     pal          = pal_12[abund_all_models],
     fname        = file.path(fig_dir, paste0("FC_Int_abund_", meso_tag, "_LF.png"))
   )
@@ -328,9 +328,9 @@ for (is_meso in c(FALSE, TRUE)) {
     df           = df_base,
     title        = paste0("SIV % bias \u2014 Royle-Nichols models \u2014 ", meso_label, " \u2014 No landscape"),
     estimand_map = siv_map,
-    ylim         = c(-200, 200),
-    fig_width    = if (is_meso) 12 else 8,
-    fig_height   = 7,
+    ylim         = c(-100, 100),
+    fig_width    = if (is_meso) 11 else 8,
+    fig_height   = 6,
     pal          = pal_12[rn_all_models],
     fname        = file.path(fig_dir, paste0("FA_SIV_rn_", meso_tag, "_LF.png"))
   )
@@ -340,9 +340,9 @@ for (is_meso in c(FALSE, TRUE)) {
     df           = df_base,
     title        = paste0("Environmental % bias \u2014 Royle-Nichols models \u2014 ", meso_label, " \u2014 No landscape"),
     estimand_map = env_map,
-    ylim         = c(-200, 200),
-    fig_width    = 12,
-    fig_height   = 7,
+    ylim         = c(-100, 100),
+    fig_width    = 11,
+    fig_height   = 6,
     pal          = pal_12[rn_all_models],
     fname        = file.path(fig_dir, paste0("FB_Env_rn_", meso_tag, "_LF.png"))
   )
@@ -352,9 +352,9 @@ for (is_meso in c(FALSE, TRUE)) {
     df           = df_base,
     title        = paste0("Intercept % bias \u2014 Royle-Nichols models \u2014 ", meso_label, " \u2014 No landscape"),
     estimand_map = int_map,
-    ylim         = c(-200, 200),
-    fig_width    = if (is_meso) 12 else 12,
-    fig_height   = 7,
+    ylim         = c(-100, 100),
+    fig_width    = if (is_meso) 11 else 12,
+    fig_height   = 6,
     pal          = pal_12[rn_all_models],
     fname        = file.path(fig_dir, paste0("FC_Int_rn_", meso_tag, "_LF.png"))
   )
@@ -382,7 +382,7 @@ for (is_meso in c(FALSE, TRUE)) {
     df           = df_base,
     title        = paste0("SIV % bias \u2014 Occupancy models \u2014 ", meso_label, " \u2014 No landscape"),
     estimand_map = siv_map,
-    ylim         = c(-200, 200),
+    ylim         = c(-100, 100),
     fig_width    = if (is_meso) 12 else 7,
     fig_height   = 7,
     pal          = pal_12[occ_all_models],
@@ -394,7 +394,7 @@ for (is_meso in c(FALSE, TRUE)) {
     df           = df_base,
     title        = paste0("Environmental % bias \u2014 Occupancy models \u2014 ", meso_label, " \u2014 No landscape"),
     estimand_map = env_map,
-    ylim         = c(-200, 200),
+    ylim         = c(-100, 100),
     fig_width    = 12,
     fig_height   = 7,
     pal          = pal_12[occ_all_models],
@@ -406,7 +406,7 @@ for (is_meso in c(FALSE, TRUE)) {
     df           = df_base,
     title        = paste0("Intercept % bias \u2014 Occupancy models \u2014 ", meso_label, " \u2014 No landscape"),
     estimand_map = int_map,
-    ylim         = c(-200, 200),
+    ylim         = c(-100, 100),
     fig_width    = if (is_meso) 12 else 12,
     fig_height   = 7,
     pal          = pal_12[occ_all_models],
@@ -447,16 +447,16 @@ make_bias_fig_summary <- function(df, title, estimand_map,
     # Zero reference line
     geom_hline(yintercept = 0, linetype = "dashed",
                linewidth = 0.6, colour = "grey40") +
-    
-    # # Coloured CI bars — dodged by nSites
-    # stat_summary(aes(group = nSites_label),
-    #              fun      = mean,
-    #              fun.min  = function(x) mean(x) - sd(x),
-    #              fun.max  = function(x) mean(x) + sd(x),
-    #              geom     = "linerange",
-    #              linewidth = 0.8,
-    #              position = position_dodge(0.75)) +
-    # 
+
+    # Coloured CI bars — dodged by nSites
+    stat_summary(aes(group = nSites_label),
+                 fun      = mean,
+                 fun.min  = function(x) mean(x) - sd(x),
+                 fun.max  = function(x) mean(x) + sd(x),
+                 geom     = "linerange",
+                 linewidth = 0.8,
+                 position = position_dodge(0.75)) +
+
     # Coloured summary points
     stat_summary(aes(group = nSites_label, shape = nSites_label),
                  fun      = mean,
@@ -513,8 +513,8 @@ make_bias_fig_summary(
   title        = "SIV % bias summary \u2014 Abundance models \u2014 Meso \u2014 No landscape",
   estimand_map = estimands_siv_meso,
   ylim         = c(-100, 100),
-  fig_width    = 12,
-  fig_height   = 7,
+  fig_width    = 11,
+  fig_height   = 6,
   pal          = pal_12[abund_all_models],
   fname        = file.path(fig_dir, "FA_SIV_summary_abund_meso_LF.png")
 )
@@ -531,8 +531,8 @@ make_bias_fig_summary(
   title        = "SIV % bias summary \u2014 Royle-Nichols models \u2014 Meso \u2014 No landscape",
   estimand_map = estimands_siv_meso,
   ylim         = c(-100, 100),
-  fig_width    = 12,
-  fig_height   = 7,
+  fig_width    = 11,
+  fig_height   = 6,
   pal          = pal_12[rn_all_models],
   fname        = file.path(fig_dir, "FA_SIV_summary_rn_meso_LF.png")
 )
@@ -548,8 +548,8 @@ make_bias_fig_summary(
   title        = "SIV % bias summary \u2014 Occupancy models \u2014 Meso \u2014 No landscape",
   estimand_map = estimands_siv_meso,
   ylim         = c(-100, 100),
-  fig_width    = 12,
-  fig_height   = 7,
+  fig_width    = 11,
+  fig_height   = 6,
   pal          = pal_12[occ_all_models],
   fname        = file.path(fig_dir, "FA_SIV_summary_occ_meso_LF.png")
 )
@@ -630,12 +630,12 @@ p_summary_clean <- ggplot(summary_df,
                               y      = total_abs_bias,
                               colour = method_label,
                               shape  = abundance)) +
-  # stat_summary(fun      = mean,
-  #              fun.min  = function(x) mean(x) - sd(x),
-  #              fun.max  = function(x) mean(x) + sd(x),
-  #              geom     = "linerange",
-  #              linewidth = 0.8,
-  #              position = position_dodge(width = 0.6)) +
+  stat_summary(fun      = mean,
+               fun.min  = function(x) mean(x) - sd(x),
+               fun.max  = function(x) mean(x) + sd(x),
+               geom     = "linerange",
+               linewidth = 0.8,
+               position = position_dodge(width = 0.6)) +
   stat_summary(fun      = mean,
                geom     = "point",
                size     = 4,
