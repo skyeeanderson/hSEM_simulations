@@ -7,7 +7,7 @@
 #    - x-axis  = model (method_label)
 #    - Dodged within each model by nSites (50/500/1000)
 #    - Coloured jitter = model colour
-#    - Black CI bars + black summary points
+#    - Black SD bars + black summary points
 #    - Shapes: circle=50, triangle=500, square=1000
 #
 #  Produces 12 figures (6 abundance + 6 occupancy), LF only.
@@ -136,7 +136,7 @@ comp_long_clean <- comp_long %>%
 #
 make_bias_fig_FABC <- function(df, title, estimand_map,
                                subtitle   = "Percent bias = (estimate \u2212 truth) / |truth| \u00d7 100",
-                               ylim       = c(100, 100),
+                               ylim       = c(-100, 100),
                                fig_width  = 12,
                                fig_height = 7,
                                pal        = pal_12,
@@ -169,7 +169,7 @@ make_bias_fig_FABC <- function(df, title, estimand_map,
                                                 dodge.width  = 0.75),
                 alpha = 0.3, size = 1.2) +
     
-    # Black CI bars — dodged by nSites
+    # Black SD bars — dodged by nSites
     stat_summary(aes(group = nSites_label, shape = nSites_label),
                  fun      = mean,
                  fun.min  = function(x) mean(x) - sd(x),
@@ -448,7 +448,7 @@ make_bias_fig_summary <- function(df, title, estimand_map,
     geom_hline(yintercept = 0, linetype = "dashed",
                linewidth = 0.6, colour = "grey40") +
 
-    # Coloured CI bars — dodged by nSites
+    # Coloured SD bars — dodged by nSites
     stat_summary(aes(group = nSites_label),
                  fun      = mean,
                  fun.min  = function(x) mean(x) - sd(x),
@@ -607,7 +607,7 @@ p_summary <- ggplot(summary_df,
   coord_cartesian(ylim = c(50, 2900)) +
   scale_colour_manual(values = pal_use, name = "Model") +
   labs(title    = "Total absolute bias — all estimands — Meso — No landscape",
-       subtitle = "Sum of |% bias| across SIVs, intercepts, and environmental effects per replicate\na_int excluded (truth = 0 for rare predator)",
+       subtitle = "Sum of |% bias| across SIVs, intercepts, and environmental effects per replicate",
        x = NULL, y = "Total absolute bias (%) — log10 scale") + 
   theme_bw(base_size = 11) +
   theme(legend.position  = "none",
@@ -649,7 +649,7 @@ p_summary_clean <- ggplot(summary_df,
   scale_shape_manual(values = c("Abundant" = 16, "Rare" = 17),
                      name   = "Scenario") +
   labs(title    = "Total absolute bias — all estimands — Meso — No landscape",
-       subtitle = "Mean ± 95% CI of summed |% bias| across estimands per replicate\na_int excluded (truth = 0 for rare predator)",
+       subtitle = "Mean ± SD of summed |% bias| across estimands per replicate",
        x        = NULL,
        y        = "Total absolute bias (%) — log10 scale") +
   theme_bw(base_size = 11) +
@@ -666,7 +666,7 @@ ggsave(file.path(fig_dir, "F00_summary_bias_clean_meso_LF.png"),
        p_summary_clean, width = 12, height = 5, dpi = 300)
 
 
- # ── Model 6 diagnostic histogram ─────────────────────────────────────────────
+ # ── Model 9 diagnostic histogram ─────────────────────────────────────────────
 p_mod6_hist <- summary_df %>%
   filter(model == "null_occ_sem") %>%
   ggplot(aes(x = total_abs_bias)) +
